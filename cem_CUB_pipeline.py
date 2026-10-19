@@ -73,9 +73,9 @@ def main():
         "concept_loss_weight": 5.0,
         "task_loss_weight": 1.0,
         "training_intervention_prob": 0.25,
-        "max_epochs": 2,               # ミニテストのため2エポック
+        "max_epochs": 150,               # ミニテストのため2エポック
         "concept_warmup_epochs": 0,    # ウォームアップ動作も1エポック確認
-        "check_val_every_n_epoch": 1,
+        "check_val_every_n_epoch": 5,
         "num_workers": 4,
         "num_load_workers": 4,
         "dataset_config": data_config,
@@ -110,7 +110,7 @@ def main():
         result_dir=result_dir,
         split=0,
         imbalance=imbalance,
-        rerun=False,
+        rerun=True,
         save_model=True,
     )
 
@@ -124,7 +124,7 @@ def main():
         run_name=f"{MODE}_CUB_{int(time.time())}",
         test_dl=test_dl,
         dl_name="test",
-        rerun=False,
+        rerun=True,
     )
 
     print("="*10 + "テスト結果" + "="*10)
