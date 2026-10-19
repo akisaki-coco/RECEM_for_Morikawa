@@ -11,7 +11,7 @@ from pytorch_lightning import seed_everything
 from scipy.special import expit
 from sklearn.metrics import accuracy_score
 from tqdm import tqdm
-import tensorflow as tf
+# import tensorflow as tf
 
 import cem.metrics.niching as niching
 import cem.metrics.oracle as oracle
@@ -271,6 +271,8 @@ def representation_avg_task_pred(
     y_test,
     predictor_train_kwags=None,
 ):
+    import tensorflow as tf
+
     n_samples, n_concepts, concept_emb_dims = c_embs_train.shape
     n_classes = len(np.unique(y_train))
     predictor_train_kwags = predictor_train_kwags or {

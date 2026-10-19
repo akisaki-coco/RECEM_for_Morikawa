@@ -12,7 +12,7 @@ Mahinpei et al.'s "Promises and Pitfalls of Black-Box Concept Learning Models"
 import numpy as np
 import scipy
 import sklearn
-import tensorflow as tf
+# import tensorflow as tf
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 
@@ -209,6 +209,8 @@ def concept_purity_matrix(
         where the (i,j)-th entry specifies the testing AUC of using the i-th
         concept soft representations to predict the j-th concept.
     """
+    import tensorflow as tf
+
     # Start by handling default arguments
     predictor_train_kwags = predictor_train_kwags or {}
 
