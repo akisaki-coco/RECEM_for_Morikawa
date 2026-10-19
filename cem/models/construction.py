@@ -51,7 +51,7 @@ def construct_model(
     train=False,
 ):
     task_loss_weight = config.get('task_loss_weight', 1.0)
-    if config["architecture"] in ["ConceptEmbeddingModel", "CEM"]:
+    if config["architecture"] in ["ConceptEmbeddingModel", "CEM", "RECEM"]:
         model_cls = models_cem.ConceptEmbeddingModel
         extra_params = {
             "emb_size": config["emb_size"],
@@ -67,6 +67,15 @@ def construct_model(
             ),
             "c2y_model": c2y_model,
             "c2y_layers": config.get("c2y_layers", []),
+
+            # RECEM用
+            "beta_max": config.get("beta_max", 0.5),
+            "beta_hsic": config.get("beta_hsic", 0.1),
+            "lambda_dis": config.get("lambda_dis", 0.1),
+            "lambda_rec": config.get("lambda_rec", 0.1),
+            "grl_lambda": config.get("grl_lambda", 1.0),
+            "ema_momentum": config.get("ema_momentum", 0.9),
+            
         }
         if "embeding_activation" in config:
             # Legacy support for typo in argument

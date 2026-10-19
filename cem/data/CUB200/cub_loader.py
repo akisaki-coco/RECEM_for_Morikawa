@@ -698,6 +698,14 @@ DEFAULT_UNC_MAP = [
     {0: 0.5, 1: 0.5, 2: 0.5, 3:0.75, 4:1.0},
     {0: 0.5, 1: 0.5, 2: 0.5, 3:0.75, 4:1.0},
 ]
+def _identity_transform(x):
+    """
+    Identity transform defined at module level (instead of a lambda) so that
+    it can be pickled when DataLoader workers are started with `spawn`.
+    """
+    return x
+
+
 def discrete_to_continuous_unc(unc_val, attr_label, unc_map):
     '''
     Yield a continuous prob representing discrete conf val
@@ -984,7 +992,7 @@ def load_data(
     resized_resol = int(resol * 256/224)
     is_training = any(['train.pkl' in f for f in pkl_paths])
     additional_sample_transform = (
-        (lambda x: x) if additional_sample_transform is None
+        _identity_transform if additional_sample_transform is None
         else additional_sample_transform
     )
 

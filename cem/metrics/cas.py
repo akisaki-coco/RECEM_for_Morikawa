@@ -6,6 +6,9 @@ from sklearn_extra.cluster import KMedoids
 from sklearn.metrics import homogeneity_score
 from tqdm import tqdm
 
+# np.trapz was removed in recent NumPy versions in favour of np.trapezoid
+_trapz = getattr(np, "trapezoid", None) or np.trapz
+
 warnings.simplefilter("ignore", UserWarning)
 
 def concept_alignment_score(
@@ -51,7 +54,7 @@ def concept_alignment_score(
         c_vec.shape[0],
         step,
     ).astype(int)
-    max_auc = np.trapz(np.ones(len(n_clusters)))
+    max_auc = _trapz(np.ones(len(n_clusters)))
 
     # for each concept:
     #   1. find clusters
@@ -88,8 +91,8 @@ def concept_alignment_score(
             )
 
         # compute the area under the curve
-        concept_auc.append(np.trapz(np.array(concept_homogeneity)) / max_auc)
-        task_auc.append(np.trapz(np.array(task_homogeneity)) / max_auc)
+        concept_auc.append(_trapz(np.array(concept_homogeneity)) / max_auc)
+        task_auc.append(_trapz(np.array(task_homogeneity)) / max_auc)
 
     # return the average alignment across all concepts
     concept_auc = np.mean(concept_auc)

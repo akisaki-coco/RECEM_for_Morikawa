@@ -1,12 +1,58 @@
+from asyncio import runners
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import torch.nn as nn
 
 from torchvision.models import resnet50
 
 from cem.models.cbm import ConceptBottleneckModel
 import cem.train.utils as utils
 
+import torch.nn.functional as F
+from torch.autograd import Function
+
+# ==============================================================================
+# RECEM用 補助モジュール (GRL & HSIC)
+# ==============================================================================
+class GradientReversalFunction(Function):
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grads):
+        return -ctx.lambda_ * grads, None
+
+class GRL(nn.Module):
+    def __init__(self, lambda_=1.0):
+        super().__init__()
+        self.lambda_ = lambda_
+
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.lambda_)
+
+def rbf_kernel(X, sigma=None):
+    pairwise_dist = torch.cdist(X, X, p=2) ** 2
+    if sigma is None:
+        median_dist = torch.median(pairwise_dist.detach())
+        sigma = torch.sqrt(0.5 * median_dist + 1e-6)
+    gamma = 1.0 / (2.0 * (sigma ** 2) + 1e-8)
+    return torch.exp(-gamma * pairwise_dist)
+
+def compute_hsic(Z, C_tilde):
+    B = Z.size(0)
+    if B <= 1:
+        return torch.tensor(0.0, device=Z.device)
+    Z_norm = F.normalize(Z, p=2, dim=-1)
+    C_norm = F.normalize(C_tilde, p=2, dim=-1)
+    K_z = rbf_kernel(Z_norm)
+    K_c = rbf_kernel(C_norm)
+    H = torch.eye(B, device=Z.device) - (1.0 / B) * torch.ones((B, B), device=Z.device)
+    K_z_c = H @ K_z @ H
+    K_c_c = H @ K_c @ H
+    return torch.trace(K_z_c @ K_c_c) / ((B - 1) ** 2)
 
 
 ################################################################################
@@ -49,6 +95,14 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
         context_gen_out_size=None,
 
         top_k_accuracy=None,
+
+        # --- ここからRECEM用の引数を追加 ---
+        beta_max=0.5,
+        beta_hsic=0.1,
+        lambda_dis=0.1,
+        lambda_rec=0.1,
+        grl_lambda=1.0,
+        ema_momentum=0.9,
     ):
         """
         Constructs a Concept Embedding Model (CEM) as defined by
@@ -230,6 +284,81 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
         self.emb_size = emb_size
         self.use_concept_groups = use_concept_groups
 
+        # ConceptEmbeddingModel.__init__ の末尾に追加するコード例
+        hidden_dim = list(self.pre_concept_model.modules())[-1].out_features  # バックボーンψの出力次元 (例: ResNetなら512や2048)
+        bottleneck_dim = n_concepts * emb_size  # K * d
+
+        # 1. 無関連特徴エンコーダ E_dis: R^{n_hidden} -> R^{K*d}
+        self.disentangle_encoder = nn.Sequential(
+            nn.Linear(hidden_dim, bottleneck_dim),
+            nn.LeakyReLU(),
+            nn.Linear(bottleneck_dim, bottleneck_dim),
+        )
+
+        # 2. 潜在表現再構成デコーダ D: R^{2*K*d} -> R^{n_hidden}
+        # (論文の D(\tilde{C}_i, z_i) に対応。連結 [C_tilde, z_i] または加算を入力とする)
+        self.reconstruct_decoder = nn.Sequential(
+            nn.Linear(bottleneck_dim * 2, hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        # 3. 勾配反転層
+        self.grl = GRL(lambda_=grl_lambda)
+
+        # 4. 各概念kのアクティブ意味的重心 \bar{c}_k^+ を保持するバッファ [K, d]
+        self.register_buffer("semantic_mean_pos", torch.zeros(n_concepts, emb_size))
+        self.register_buffer("semantic_mean_initialized", torch.zeros(n_concepts, dtype=torch.bool))
+        self.ema_momentum = ema_momentum  # 推論用の重心EMA更新率
+
+        # 損失の重み・スケジュール用ハイパーパラメータ
+        self.beta_max = beta_max        # Concept Mixupの最大混合率 (例: 0.5)
+        self.beta_hsic = beta_hsic      # HSIC損失の重み (例: 0.1)
+        self.lambda_dis = lambda_dis    # 分離損失全体の重み
+        self.lambda_rec = lambda_rec    # 再構成損失の重み
+        self._recem_cache = {}
+
+    # def _after_interventions(
+    #     self,
+    #     prob,
+    #     pos_embeddings,
+    #     neg_embeddings,
+    #     intervention_idxs=None,
+    #     c_true=None,
+    #     train=False,
+    #     competencies=None,
+    #     **kwargs
+    # ):
+    #     if train and (self.training_intervention_prob != 0) and (
+    #         (c_true is not None) and
+    #         (intervention_idxs is None)
+    #     ):
+    #         # Then we will probabilistically intervene in some concepts
+    #         mask = torch.bernoulli(
+    #             self.ones * self.training_intervention_prob,
+    #         )
+    #         intervention_idxs = torch.tile(
+    #             mask,
+    #             (c_true.shape[0], 1),
+    #         )
+    #     if (c_true is None) or (intervention_idxs is None):
+    #         # Then time to mix!
+    #         bottleneck = (
+    #             pos_embeddings * torch.unsqueeze(prob, dim=-1) +
+    #             neg_embeddings * (1 - torch.unsqueeze(prob, dim=-1))
+    #         )
+    #         return prob, intervention_idxs, bottleneck
+    #     intervention_idxs = intervention_idxs.type(torch.FloatTensor)
+    #     intervention_idxs = intervention_idxs.to(prob.device)
+    #     output = prob * (1 - intervention_idxs) + intervention_idxs * c_true
+    #     # Then time to mix!
+    #     bottleneck = self._construct_c2y_input(
+    #         pos_embeddings=pos_embeddings,
+    #         neg_embeddings=neg_embeddings,
+    #         probs=output,
+    #         **kwargs,
+    #     )
+    #     return output, intervention_idxs, bottleneck
 
     def _after_interventions(
         self,
@@ -255,20 +384,19 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
                 (c_true.shape[0], 1),
             )
         if (c_true is None) or (intervention_idxs is None):
-            # Then time to mix!
-            bottleneck = (
-                pos_embeddings * torch.unsqueeze(prob, dim=-1) +
-                neg_embeddings * (1 - torch.unsqueeze(prob, dim=-1))
-            )
-            return prob, intervention_idxs, bottleneck
-        intervention_idxs = intervention_idxs.type(torch.FloatTensor)
-        intervention_idxs = intervention_idxs.to(prob.device)
-        output = prob * (1 - intervention_idxs) + intervention_idxs * c_true
-        # Then time to mix!
+            output = prob
+        else:
+            intervention_idxs = intervention_idxs.type(torch.FloatTensor)
+            intervention_idxs = intervention_idxs.to(prob.device)
+            output = prob * (1 - intervention_idxs) + intervention_idxs * c_true
+
+        # 学習時・推論時・介入時すべて共通して _construct_c2y_input (Concept Mixup) を通す
         bottleneck = self._construct_c2y_input(
             pos_embeddings=pos_embeddings,
             neg_embeddings=neg_embeddings,
             probs=output,
+            c_true=c_true,
+            train=train,
             **kwargs,
         )
         return output, intervention_idxs, bottleneck
@@ -276,23 +404,109 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
     def _predict_labels(self, bottleneck, **task_loss_kwargs):
         return self.c2y_model(torch.flatten(bottleneck, start_dim=1, end_dim=-1))
 
+    # def _construct_c2y_input(
+    #     self,
+    #     pos_embeddings,
+    #     neg_embeddings,
+    #     probs,
+    #     **task_loss_kwargs,
+    # ):
+    #     bottleneck = (
+    #         pos_embeddings * torch.unsqueeze(probs, dim=-1) + (
+    #             neg_embeddings * (
+    #                 1 - torch.unsqueeze(probs, dim=-1)
+    #             )
+    #         )
+    #     )
+    #     bottleneck = bottleneck.view(
+    #         (-1, self.n_concepts * self.emb_size)
+    #     )
+    #     return bottleneck
+
     def _construct_c2y_input(
         self,
         pos_embeddings,
         neg_embeddings,
         probs,
+        c_true=None,
+        train=False,
+        pre_c=None,
         **task_loss_kwargs,
     ):
-        bottleneck = (
-            pos_embeddings * torch.unsqueeze(probs, dim=-1) + (
-                neg_embeddings * (
-                    1 - torch.unsqueeze(probs, dim=-1)
-                )
+        B, K, d = pos_embeddings.shape
+        probs_exp = torch.unsqueeze(probs, dim=-1)  # [B, K, 1]
+
+        # 1. 通常のCEMの概念埋め込み: c_{i,k} = p_{i,k} * c^+ + (1 - p_{i,k}) * c^-
+        c_orig = pos_embeddings * probs_exp + neg_embeddings * (1.0 - probs_exp)
+
+        # 2. Concept Mixup (Semantic Alignment)
+        # 学習時は正解ラベル c_true、推論・介入時は予測確率 probs (> 0.5) からアクティブマスク \mu を作成
+        if train and (c_true is not None):
+            mu = (c_true == 1).float().unsqueeze(-1)  # [B, K, 1]
+        else:
+            mu = (probs_exp > 0.5).float()            # [B, K, 1]
+
+        active_count = mu.sum(dim=0)  # [K, 1]
+        batch_mean_pos = (mu * pos_embeddings).sum(dim=0) / (active_count + 1e-6)  # [K, d]
+
+        if train:
+            valid_k = (active_count.squeeze(-1) > 0)
+            with torch.no_grad():
+                for k in range(K):
+                    if valid_k[k]:
+                        if not self.semantic_mean_initialized[k]:
+                            self.semantic_mean_pos[k] = batch_mean_pos[k]
+                            self.semantic_mean_initialized[k] = True
+                        else:
+                            self.semantic_mean_pos[k] = (
+                                self.ema_momentum * self.semantic_mean_pos[k]
+                                + (1.0 - self.ema_momentum) * batch_mean_pos[k]
+                            )
+            c_bar_pos = torch.where(
+                valid_k.unsqueeze(-1),
+                batch_mean_pos,
+                self.semantic_mean_pos.detach(),
             )
-        )
-        bottleneck = bottleneck.view(
-            (-1, self.n_concepts * self.emb_size)
-        )
+            # エポック進行に合わせて混合率 \beta を 0 -> beta_max へスケジュール
+            # self.trainer は Trainer 未接続だと RuntimeError を投げるため _trainer を参照
+            trainer = getattr(self, "_trainer", None)
+            max_epochs = getattr(trainer, "max_epochs", 100) if trainer is not None else 100
+            current_epoch = self.current_epoch if trainer is not None else max_epochs
+            progress = min(1.0, float(current_epoch) / max(1.0, float(max_epochs)))
+            current_beta = self.beta_max * progress
+        else:
+            c_bar_pos = self.semantic_mean_pos
+            current_beta = self.beta_max
+
+        # アクティブ概念のみ意味的重心 \bar{c}_k^+ と混合
+        c_bar_expanded = c_bar_pos.unsqueeze(0).expand(B, K, d)
+        c_pos_aligned = (1.0 - current_beta) * pos_embeddings + current_beta * c_bar_expanded
+        c_active_mixed = probs_exp * c_pos_aligned + (1.0 - probs_exp) * neg_embeddings
+
+        bottleneck = mu * c_active_mixed + (1.0 - mu) * c_orig
+        bottleneck = bottleneck.view((-1, self.n_concepts * self.emb_size))
+
+        # 3. 学習時のみ Concept-Level Disentanglement 用の変数を計算してキャッシュ
+        if train and (c_true is not None) and (pre_c is not None):
+            c_gt_exp = (c_true == 1).float().unsqueeze(-1)
+            c_tilde = c_gt_exp * pos_embeddings + (1.0 - c_gt_exp) * neg_embeddings
+            c_tilde_flat = c_tilde.view(B, K * d)
+
+            z_i = self.disentangle_encoder(pre_c)
+            z_grl = self.grl(z_i)
+            y_logits_irr = self.c2y_model(z_grl)
+            h_recon = self.reconstruct_decoder(torch.cat([c_tilde_flat, z_i], dim=-1))
+
+            self._recem_cache = {
+                "z_i": z_i,
+                "c_tilde_flat": c_tilde_flat,
+                "y_logits_irr": y_logits_irr,
+                "h_recon": h_recon,
+                "h_orig": pre_c.detach(),
+            }
+        else:
+            self._recem_cache = {}
+
         return bottleneck
 
     def _generate_concept_embeddings(
@@ -301,6 +515,8 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
         latent=None,
         training=False,
     ):
+        pre_c = None
+
         if latent is None:
             pre_c = self.pre_concept_model(x)
             contexts = []
@@ -316,15 +532,18 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
                 prob = prob_gen(context)
                 contexts.append(torch.unsqueeze(context, dim=1))
                 c_sem.append(self.sig(prob))
-            c_sem = torch.cat(c_sem, axis=-1)
-            contexts = torch.cat(contexts, axis=1)
+            c_sem = torch.cat(c_sem, dim=-1)
+            contexts = torch.cat(contexts, dim=1)
             latent = contexts, c_sem
         else:
             contexts, c_sem = latent
 
         pos_embeddings = contexts[:, :, :self.emb_size]
         neg_embeddings = contexts[:, :, self.emb_size:]
-        return c_sem, pos_embeddings, neg_embeddings, {}
+        # return c_sem, pos_embeddings, neg_embeddings, {}
+
+        # pre_cを他でも使うので返す
+        return c_sem, pos_embeddings, neg_embeddings, {"pre_c": pre_c}
 
     def _new_tail_results(
         self,
@@ -446,6 +665,54 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
             y_pred=y_pred,
         )
         return tuple([c_sem, bottleneck, y_pred] + tail_results)
+    
+    def _run_step(
+        self,
+        batch,
+        batch_idx,
+        train=False,
+        intervention_idxs=None,
+    ):
+        # 1. 親クラス (ConceptBottleneckModel) の _run_step を実行し、基本のCEM損失を取得
+        loss, result = super()._run_step(
+            batch=batch,
+            batch_idx=batch_idx,
+            train=train,
+            intervention_idxs=intervention_idxs,
+        )
+
+        # 2. 学習時のみ RECEM の分離損失 (L_dis) と再構成損失 (L_rec) を加算
+        if train and getattr(self, "_recem_cache", None):
+            _, y, _ = self._unpack_batch(batch)
+            cache = self._recem_cache
+
+            # (a) 勾配反転層を通した無関連特徴 z_i のタスク分類損失
+            if self.n_tasks > 1:
+                loss_adv_task = self.loss_task(cache["y_logits_irr"], y.long())
+            else:
+                loss_adv_task = self.loss_task(cache["y_logits_irr"].squeeze(-1), y.float())
+
+            # (b) z_i と真の概念埋め込み \tilde{C}_i の HSIC 独立性損失
+            loss_hsic = compute_hsic(cache["z_i"], cache["c_tilde_flat"])
+            loss_dis = loss_adv_task + self.beta_hsic * loss_hsic
+
+            # (c) バックボーン特徴 h_i の再構成損失
+            loss_rec = F.mse_loss(cache["h_recon"], cache["h_orig"])
+
+            # 総合損失への加算
+            recem_extra_loss = (self.lambda_dis * loss_dis) + (self.lambda_rec * loss_rec)
+            loss = loss + recem_extra_loss
+
+            # ログ確認用に result 辞書にも記録
+            result["loss_dis"] = loss_dis.detach().item()
+            result["loss_hsic"] = loss_hsic.detach().item()
+            result["loss_rec"] = loss_rec.detach().item()
+            result["loss"] = loss.detach().item()
+
+            # メモリリーク防止のためキャッシュをクリア
+            self._recem_cache = {}
+
+        return loss, result
 
 
 
@@ -599,8 +866,8 @@ class FixedEmbConceptEmbeddingModel(ConceptEmbeddingModel):
                 prob = prob_gen(context)
                 contexts.append(torch.unsqueeze(context, dim=1))
                 c_sem.append(self.sig(prob))
-            c_sem = torch.cat(c_sem, axis=-1)
-            contexts = torch.cat(contexts, axis=1)
+            c_sem = torch.cat(c_sem, dim=-1)
+            contexts = torch.cat(contexts, dim=1)
             latent = contexts, c_sem
         else:
             contexts, c_sem = latent
@@ -620,76 +887,3 @@ class FixedEmbConceptEmbeddingModel(ConceptEmbeddingModel):
             pos_embeddings = contexts[:, :, :self.emb_size]
             neg_embeddings = contexts[:, :, self.emb_size:]
         return c_sem, pos_embeddings, neg_embeddings, {}
-
-
-    def _after_interventions(
-        self,
-        prob,
-        pos_embeddings,
-        neg_embeddings,
-        intervention_idxs=None,
-        c_true=None,
-        train=False,
-        competencies=None,
-        **kwargs
-    ):
-        if self.fixed_embeddings_always:
-            # Then simply use the CEM pathway
-            return ConceptEmbeddingModel._after_interventions(
-                self=self,
-                prob=prob,
-                pos_embeddings=pos_embeddings,
-                neg_embeddings=neg_embeddings,
-                intervention_idxs=intervention_idxs,
-                c_true=c_true,
-                train=train,
-                competencies=competencies,
-                **kwargs
-            )
-        if train and (self.training_intervention_prob != 0) and (
-            (c_true is not None) and
-            (intervention_idxs is None)
-        ):
-            # Then we will probabilistically intervene in some concepts
-            mask = torch.bernoulli(
-                self.ones * self.training_intervention_prob,
-            )
-            intervention_idxs = torch.tile(
-                mask,
-                (c_true.shape[0], 1),
-            )
-        if (c_true is None) or (intervention_idxs is None):
-            # Then time to mix!
-            bottleneck = (
-                pos_embeddings * torch.unsqueeze(prob, dim=-1) +
-                neg_embeddings * (1 - torch.unsqueeze(prob, dim=-1))
-            )
-            return prob, intervention_idxs, bottleneck
-        intervention_idxs = intervention_idxs.type(torch.FloatTensor)
-        intervention_idxs = intervention_idxs.to(prob.device)
-        output = prob * (1 - intervention_idxs) + intervention_idxs * c_true
-        # Use the fixed embeddings for the intervened concepts
-        global_pos_embs = self.concept_embeddings[:, 0, :].unsqueeze(0).expand(
-            intervention_idxs.shape[0],
-            -1,
-            -1,
-        )
-        global_neg_embs = self.concept_embeddings[:, 1, :].unsqueeze(0).expand(
-            intervention_idxs.shape[0],
-            -1,
-            -1,
-        )
-        pos_embeddings = pos_embeddings * (1 - intervention_idxs.unsqueeze(-1)) + (
-            intervention_idxs.unsqueeze(-1) * global_pos_embs
-        )
-        neg_embeddings = neg_embeddings * (1 - intervention_idxs.unsqueeze(-1)) + (
-            intervention_idxs.unsqueeze(-1) * global_neg_embs
-        )
-        # Then time to mix!
-        bottleneck = self._construct_c2y_input(
-            pos_embeddings=pos_embeddings,
-            neg_embeddings=neg_embeddings,
-            probs=output,
-            **kwargs,
-        )
-        return output, intervention_idxs, bottleneck

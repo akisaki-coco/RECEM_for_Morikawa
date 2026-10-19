@@ -423,7 +423,6 @@ class WrapperModule(pl.LightningModule):
         if self.lr_scheduler_patience != 0:
             lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
-                verbose=True,
                 patience=self.lr_scheduler_patience,
                 factor=self.lr_scheduler_factor,
             )
