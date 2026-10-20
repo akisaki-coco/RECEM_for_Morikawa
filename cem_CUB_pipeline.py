@@ -106,9 +106,9 @@ def main():
     # ----------------------------------------------------
     # 中断から再開したい場合は last.ckpt のパスを指定（新規開始時は None）
     # ----------------------------------------------------
-    resume_ckpt = None
+    # resume_ckpt = None
     # 例（中断後に再開したい時はコメントアウトを解除してパスを指定）:
-    # resume_ckpt = "./results/cub_recem_1792423323/checkpoints_RECEM_CUB_1792423323_fold_1/last.ckpt"
+    resume_ckpt = "./results/cub_recem_1792474037/checkpoints_RECEM_CUB_1792474037_fold_1/last.ckpt"
 
     # 3. 既存の学習パイプライン (train_end_to_end_model) を実行
     print("--- train_end_to_end_model の実行テスト ---")
