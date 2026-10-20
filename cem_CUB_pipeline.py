@@ -65,12 +65,12 @@ def main():
         "c_extractor_arch": utils.wrap_pretrained_model(resnet34, pretrain_model=True),
         # CEMの学習設定
         "optimizer": "sgd",
-        "learning_rate": 0.01,
+        "learning_rate": 0.005,
         "weight_decay": 4e-05,
         "momentum": 0.9,
         "lr_scheduler_factor": 0.1,
         "lr_scheduler_patience": 10,
-        "concept_loss_weight": 5.0,
+        "concept_loss_weight": 1.0,
         "task_loss_weight": 1.0,
         "training_intervention_prob": 0.25,
         "max_epochs": 150,               # ミニテストのため2エポック
@@ -112,6 +112,7 @@ def main():
         imbalance=imbalance,
         rerun=True,
         save_model=True,
+        gradient_clip_val=1.0
     )
 
     # 4. テストデータでの評価 (evaluate_cbm) を実行
