@@ -173,7 +173,7 @@ def main():
     
     # ★ 直前の実行で作成されたフォルダとファイル名を指定してください
     # （例: ./results/cub_recem_1771485600/RECEM_CUB_1771485600_fold_1.pt）
-    saved_model_path = "./results/cub_recem_1792486101/RECEM_CUB_1792486101_fold_1.pt"
+    saved_model_path = "./results/cub_recem_1792486100/RECEM_CUB_1792486101_fold_1.pt"
 
     # 1. CUBデータセットのロード (test_dl が必要)
     data_config = {
