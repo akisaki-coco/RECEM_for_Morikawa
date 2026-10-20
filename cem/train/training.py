@@ -299,9 +299,11 @@ def train_end_to_end_model(
                 result_dir,
                 f'{run_name}_experiment_config.joblib'
             ))
+
+        eval_trainer = pl.Trainer(accelerator=accelerator, devices=devices, logger=False)
         eval_results = evaluate.evaluate_cbm(
             model=model,
-            trainer=trainer,
+            trainer=eval_trainer,
             config=config,
             run_name=run_name,
             old_results=old_results,
