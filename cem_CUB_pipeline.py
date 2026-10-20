@@ -1,3 +1,4 @@
+from examples.dot_cem_train_walkthrough import trainer
 from torchvision.models import resnet34
 import time
 import os
@@ -125,6 +126,7 @@ def main():
         rerun=True,
         save_model=True,
         gradient_clip_val=1.0,
+        devices=1,
         
         # ★ 再開用
         ckpt_path=resume_ckpt,
@@ -133,10 +135,10 @@ def main():
 
     # 4. テストデータでの評価 (evaluate_cbm) を実行
     print("\n--- evaluate_cbm の実行テスト ---")
-    eval_trainer = pl.Trainer(accelerator="auto", devices=1, logger=False)
+    # eval_trainer = pl.Trainer(accelerator="auto", devices=1, logger=False)
     test_results = evaluate_cbm(
         model=model,
-        trainer=eval_trainer,
+        trainer=trainer,
         config=config,
         run_name=f"{MODE}_CUB_{int(time.time())}",
         test_dl=test_dl,
