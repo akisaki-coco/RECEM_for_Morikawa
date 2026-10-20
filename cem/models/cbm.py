@@ -648,6 +648,15 @@ class ConceptBottleneckModel(pl.LightningModule):
             # whenever no concept supervision is provided
             # Will only compute the concept loss for concepts whose certainty
             # values are fully given
+
+            # cbm.py の 650行目付近（loss_concept の直前）
+            if not torch.isfinite(c_sem).all() or (c_sem < 0).any() or (c_sem > 1).any():
+                print(f"\n[ERROR DETECTED at Batch {batch_idx}]")
+                print(f"c_sem min: {c_sem.min().item()}, max: {c_sem.max().item()}")
+                print(f"c_sem has NaN: {torch.isnan(c_sem).any().item()}, has Inf: {torch.isinf(c_sem).any().item()}")
+                print(f"c (target) min: {c.min().item()}, max: {c.max().item()}")
+                raise ValueError("Invalid values detected in c_sem before BCELoss!")
+
             concept_loss = self.loss_concept(c_sem, c)
             concept_loss_scalar = concept_loss.detach()
             # print("concept_loss_scalar =", concept_loss_scalar)
