@@ -41,6 +41,7 @@ def _make_callbacks(config, result_dir, full_run_name):
             callbacks.append(
                 ModelCheckpoint(
                     save_top_k=1,
+                    save_last=True,
                     monitor=config["early_stopping_monitor"],
                     mode=config.get("early_stopping_mode", "min"),
                     dirpath=best_model_path,
@@ -110,6 +111,7 @@ def train_end_to_end_model(
     enable_checkpointing=False,
     accelerator="auto",
     devices="auto",
+    ckpt_path=None
 ):
     enable_checkpointing = (
         True if config.get('early_stopping_best_model', False)
@@ -235,10 +237,10 @@ def train_end_to_end_model(
                     enable_checkpointing=enable_checkpointing,
                     gradient_clip_val=gradient_clip_val,
                 )
-                if val_dl is not None:
-                    warmup_trainer.fit(model, train_dl, val_dl)
-                else:
-                    warmup_trainer.fit(model, train_dl, val_dl)
+                # if val_dl is not None:
+                warmup_trainer.fit(model, train_dl, val_dl)
+                # else:
+                #     warmup_trainer.fit(model, train_dl, val_dl)
                 _check_interruption(warmup_trainer)
                 _restore_checkpoint(
                     model=model,
@@ -258,10 +260,10 @@ def train_end_to_end_model(
             print(
                 f"\tTraining end-to-end model for {config['max_epochs']} epochs"
             )
-            if val_dl is not None:
-                fit_trainer.fit(model, train_dl, val_dl)
-            else:
-                fit_trainer.fit(model, train_dl, val_dl)
+            # if val_dl is not None:
+            fit_trainer.fit(model, train_dl, val_dl, ckpt_path=ckpt_path)
+            # else:
+            #     fit_trainer.fit(model, train_dl, val_dl, ckpt_path=ckpt_path)
             _check_interruption(fit_trainer)
             training_time += time.time() - start_time
             num_epochs += fit_trainer.current_epoch

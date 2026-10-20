@@ -79,6 +79,11 @@ def main():
         "num_workers": 4,
         "num_load_workers": 4,
         "dataset_config": data_config,
+
+        "early_stopping_monitor": "val_loss",
+        "early_stopping_best_model": True,
+        "early_stopping_mode": "min",
+        
         
         # RECEM用ハイパーパラメータ
         "beta_max": 0.5 if is_recem else 0,
@@ -98,6 +103,13 @@ def main():
         "bottleneck_nonlinear": None
     }
 
+    # ----------------------------------------------------
+    # 中断から再開したい場合は last.ckpt のパスを指定（新規開始時は None）
+    # ----------------------------------------------------
+    resume_ckpt = None
+    # 例（中断後に再開したい時はコメントアウトを解除してパスを指定）:
+    # resume_ckpt = "./results/cub_recem_1792423323/checkpoints_RECEM_CUB_1792423323_fold_1/last.ckpt"
+
     # 3. 既存の学習パイプライン (train_end_to_end_model) を実行
     print("--- train_end_to_end_model の実行テスト ---")
     model, train_eval_results = train_end_to_end_model(
@@ -112,7 +124,11 @@ def main():
         imbalance=imbalance,
         rerun=True,
         save_model=True,
-        gradient_clip_val=1.0
+        gradient_clip_val=1.0,
+        
+        # ★ 再開用
+        ckpt_path=resume_ckpt,
+        enable_checkpointing=True,
     )
 
     # 4. テストデータでの評価 (evaluate_cbm) を実行
