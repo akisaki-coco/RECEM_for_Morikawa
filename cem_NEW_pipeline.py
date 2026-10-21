@@ -466,8 +466,8 @@ def main():
     # 学習パラメータ
     BATCH_SIZE = 32
     NUM_WORKERS = 2                     # Macでの安定動作のため 2 を推奨
-    MAX_EPOCHS = 2                      # まずは2エポックで動作確認
-    CHECK_VAL_EVERY_N_EPOCH = 1         # 1エポックごとに検証
+    MAX_EPOCHS = 100                      # まずは2エポックで動作確認
+    CHECK_VAL_EVERY_N_EPOCH = 5         # 1エポックごとに検証
 
     result_dir = f"./results/custom_{MODE.lower()}_{datetime.date.today()}"
     os.makedirs(result_dir, exist_ok=True)
