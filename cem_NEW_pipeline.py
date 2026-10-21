@@ -253,7 +253,7 @@ def run_kfold_pipeline(
     val_size=0.10,
     batch_size=32,
     num_workers=2,
-    img_size=224,
+    img_size=900,
     config=None,
     MODE="RECEM",
     result_dir="./results",
