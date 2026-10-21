@@ -46,7 +46,7 @@ except RuntimeError:
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torchvision.models import resnet34
-from PIL import Image
+from PIL import Image, ImageOps
 import pandas as pd
 import numpy as np
 import pytorch_lightning as pl
@@ -58,7 +58,7 @@ import cem.train.utils as utils
 
 from cem.metrics.qwk import compute_concept_qwk
 import cem.utils.data as data_utils
-from cem.models.patch_resnet import PatchResNet
+from cem.models.patch_resnet import PatchResNet, build_patch_resnet
 
 
 # ==============================================================================
@@ -155,18 +155,54 @@ def compute_concept_imbalance(dataset, max_weight=15.0):
 
 
 # ==============================================================================
-# 3. 前処理 (Transform) 取得関数
+# 3. 前処理 (Transform) および パディング処理
 # ==============================================================================
-def get_transforms(img_size=224):
-    """ResNetバックボーン用の標準前処理を返します"""
+class PadToSquare(object):
+    """
+    元画像を縮小・変形せず、target_size (例: 1120x1120) の正方形の中央に配置し、
+    周囲の余白を黒 (0) でパディングします。
+    画像が target_size を超える場合のみ、アスペクト比を保ったまま縮小します。
+    これにより、元画像の解像度・画質・テクスチャ情報を 100% 保持できます。
+    """
+    def __init__(self, target_size=1120, fill=0):
+        self.target_size = target_size
+        self.fill = fill
+
+    def __call__(self, img):
+        w, h = img.size
+        # もし画像が target_size より大きい場合はアスペクト比を維持して縮小
+        if w > self.target_size or h > self.target_size:
+            ratio = min(self.target_size / w, self.target_size / h)
+            new_w, new_h = max(1, int(w * ratio)), max(1, int(h * ratio))
+            img = img.resize((new_w, new_h), Image.BILINEAR)
+            w, h = new_w, new_h
+
+        pad_w = self.target_size - w
+        pad_h = self.target_size - h
+        padding = (
+            pad_w // 2,
+            pad_h // 2,
+            pad_w - (pad_w // 2),
+            pad_h - (pad_h // 2),
+        )
+        return ImageOps.expand(img, padding, fill=self.fill)
+
+
+def get_transforms(img_size=224, pad_to_square=False):
+    """
+    ResNetバックボーン用の前処理を返します。
+    :param pad_to_square: True の場合は縮小せず黒帯パディング (原寸大パッチ用)
+    """
+    resize_op = PadToSquare(target_size=img_size, fill=0) if pad_to_square else transforms.Resize((img_size, img_size))
+
     train_transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
+        resize_op,
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     eval_transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
+        resize_op,
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
@@ -187,6 +223,7 @@ def build_dataloaders_from_csv(
     batch_size=32,
     num_workers=2,
     img_size=224,
+    pad_to_square=False,
 ):
     """
     クラス分類CSV と 概念分類CSV を filename をキーとして結合し、
@@ -218,7 +255,7 @@ def build_dataloaders_from_csv(
         raise ValueError("train / val / test のいずれかのデータ件数が0件です。dataset 列の値を確認してください。")
 
     # 5. 画像前処理
-    train_transform, eval_transform = get_transforms(img_size)
+    train_transform, eval_transform = get_transforms(img_size, pad_to_square=pad_to_square)
 
     # 6. Dataset インスタンスの生成
     train_ds = OrdinalConceptDataset(train_df, img_dir, filename_col, label_col, concept_cols, train_transform)
@@ -256,6 +293,7 @@ def run_kfold_pipeline(
     batch_size=32,
     num_workers=2,
     img_size=224,
+    pad_to_square=False,
     config=None,
     MODE="RECEM",
     result_dir="./results",
@@ -284,7 +322,7 @@ def run_kfold_pipeline(
     y_all = merged_df[label_col].values
     splits = list(skf.split(merged_df, y_all))
 
-    train_transform, eval_transform = get_transforms(img_size)
+    train_transform, eval_transform = get_transforms(img_size, pad_to_square=pad_to_square)
 
     all_fold_results = []
 
@@ -319,7 +357,7 @@ def run_kfold_pipeline(
         test_dl = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
         # モデルの学習 (split=fold を渡して各Foldのモデルを分離保存)
-        run_name = f"{MODE}_CUSTOM_fold{fold + 1}_{datetime.date.today()}"
+        run_name = f"{MODE}_CUSTOM_fold{fold + 1}_{time.ctime(time.time())}"
         model, _ = train_end_to_end_model(
             n_concepts=n_concepts,
             n_tasks=n_tasks,
@@ -440,11 +478,32 @@ def main():
     # ----------------------------------------------------
     MODE = "CEM"  # まずは安定した標準モデル "CEM" で動作確認 ("CEM" または "RECEM")
 
-    # ★ パッチ分割 (Patch-based 特徴抽出) を使うかどうか
-    # True : 画像を高解像度 (448x448) で読み込み、2x2=4枚の 224x224 パッチに分割して特徴抽出・統合
-    # False: 従来の 224x224 でリサイズして入力
-    USE_PATCH = False
-    IMG_SIZE = 448 if USE_PATCH else 224
+    # ----------------------------------------------------
+    # パッチ分割設定 (Patch-based 特徴抽出)
+    # ----------------------------------------------------
+    # PATCH_MODE:
+    #   "none" : 通常の全体画像 (224x224 にリサイズして入力)
+    #   "2x2"  : 448x448 にリサイズし、4パッチ (各224x224) に分割
+    #   "5x5"  : 1120x1120 に原寸大パディングし、25パッチ (各224x224) に分割 (情報劣化ゼロ)
+    PATCH_MODE = "none"  # "none", "2x2", "5x5" から選択可能
+
+    if PATCH_MODE == "5x5":
+        IMG_SIZE = 1120
+        GRID_SIZE = 5
+        PAD_TO_SQUARE = True
+        USE_PATCH = True
+        # 25パッチはGPUメモリ消費が大きいため、バッチサイズを安全な値 (4) に自動調整
+        BATCH_SIZE = min(BATCH_SIZE, 4)
+    elif PATCH_MODE == "2x2":
+        IMG_SIZE = 448
+        GRID_SIZE = 2
+        PAD_TO_SQUARE = False
+        USE_PATCH = True
+    else:
+        IMG_SIZE = 224
+        GRID_SIZE = 1
+        PAD_TO_SQUARE = False
+        USE_PATCH = False
 
     # ★ ここで K-分割交差検証を使うかどうかを選択できます
     # False: CSVの dataset 列 ('train'/'val'/'test') を使った従来の固定分割学習
@@ -465,12 +524,12 @@ def main():
     CONCEPT_COLS = None                 # None の場合は concept.csv の filename 以外の全列を自動取得
 
     # 学習パラメータ
-    BATCH_SIZE = 32
+    BATCH_SIZE = BATCH_SIZE
     NUM_WORKERS = 2                     # Macでの安定動作のため 2 を推奨
     MAX_EPOCHS = 100                    # エポック数
     CHECK_VAL_EVERY_N_EPOCH = 5         # 5エポックごとに検証
 
-    result_dir = f"./results/custom_{MODE.lower()}_{datetime.date.today()}"
+    result_dir = f"./results/custom_{MODE.lower()}_{time.ctime(time.time())}"
     os.makedirs(result_dir, exist_ok=True)
 
     # ----------------------------------------------------
@@ -480,8 +539,11 @@ def main():
 
     # バックボーン CNN (パッチ分割対応 or 通常ResNet)
     if USE_PATCH:
-        print(f"\n[バックボーン] PatchResNet (パッチ分割: 448x448 -> 224x224 x 4枚) を使用")
-        c_extractor = utils.wrap_pretrained_model(PatchResNet, pretrain_model=True)
+        print(f"\n[バックボーン] PatchResNet (パッチ分割: {IMG_SIZE}x{IMG_SIZE} -> {GRID_SIZE}x{GRID_SIZE}={GRID_SIZE*GRID_SIZE}枚, Attention Pooling, PadToSquare={PAD_TO_SQUARE}) を使用")
+        c_extractor = utils.wrap_pretrained_model(
+            build_patch_resnet(grid_size=GRID_SIZE, fusion_type="attention", pretrained=True),
+            pretrain_model=True
+        )
     else:
         print(f"\n[バックボーン] 通常の ResNet34 (画像サイズ: 224x224) を使用")
         c_extractor = utils.wrap_pretrained_model(resnet34, pretrain_model=True)
@@ -554,6 +616,7 @@ def main():
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             img_size=IMG_SIZE,
+            pad_to_square=PAD_TO_SQUARE,
             config=config,
             MODE=MODE,
             result_dir=result_dir,
@@ -577,6 +640,7 @@ def main():
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
             img_size=IMG_SIZE,
+            pad_to_square=PAD_TO_SQUARE,
         )
 
         resume_ckpt = None
@@ -589,7 +653,7 @@ def main():
             config=config,
             train_dl=train_dl,
             val_dl=val_dl,
-            run_name=f"{MODE}_CUSTOM_{datetime.date.today()}",
+            run_name=f"{MODE}_CUSTOM_{time.ctime(time.time())}",
             result_dir=result_dir,
             split=0,
             imbalance=imbalance,
@@ -609,7 +673,7 @@ def main():
             model=model,
             trainer=eval_trainer,
             config=config,
-            run_name=f"{MODE}_CUSTOM_{datetime.date.today()}",
+            run_name=f"{MODE}_CUSTOM_{time.ctime(time.time())}",
             test_dl=test_dl,
             dl_name="test",
             rerun=True,
