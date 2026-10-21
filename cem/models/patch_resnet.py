@@ -52,10 +52,11 @@ class PatchResNet(nn.Module):
                 nn.Tanh(),
                 nn.Linear(128, 1),
             )
-            self.fc = nn.Linear(in_features, self.output_dim) if in_features != self.output_dim else nn.Identity()
+            # CEM が list(model.modules())[-1].out_features を参照するため、常に nn.Linear を使用
+            self.fc = nn.Linear(in_features, self.output_dim)
         else:
-            # 単純平均プーリング
-            self.fc = nn.Linear(in_features, self.output_dim) if in_features != self.output_dim else nn.Identity()
+            # 単純平均プーリング後の射影層
+            self.fc = nn.Linear(in_features, self.output_dim)
 
         # CEM 側で list(self.pre_concept_model.modules())[-1].out_features を参照できるようにする
         self.out_features = self.output_dim
