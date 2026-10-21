@@ -129,9 +129,22 @@ class CoralLoss(nn.Module):
         """
         super().__init__()
         self.reduction = reduction
-        self.weight = weight
-        self.pos_weight = pos_weight
         self.from_logits = from_logits
+
+        # GPU移動 (model.to(device)) 時に重みテンソルが自動追従するように register_buffer を使用
+        if weight is not None:
+            if not isinstance(weight, torch.Tensor):
+                weight = torch.tensor(weight, dtype=torch.float32)
+            self.register_buffer("weight", weight)
+        else:
+            self.weight = None
+
+        if pos_weight is not None:
+            if not isinstance(pos_weight, torch.Tensor):
+                pos_weight = torch.tensor(pos_weight, dtype=torch.float32)
+            self.register_buffer("pos_weight", pos_weight)
+        else:
+            self.pos_weight = None
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
@@ -139,12 +152,21 @@ class CoralLoss(nn.Module):
         :param targets: 順序バイナリの正解ラベル [batch_size, n_concepts] (0.0 または 1.0)
         :return: スカラー損失値
         """
+        # デバイスの不一致を自動防止 (万が一 self.weight が別デバイスにあっても追従)
+        weight = self.weight
+        if weight is not None and weight.device != inputs.device:
+            weight = weight.to(inputs.device)
+
+        pos_weight = self.pos_weight
+        if pos_weight is not None and pos_weight.device != inputs.device:
+            pos_weight = pos_weight.to(inputs.device)
+
         if self.from_logits:
             bce_loss = F.binary_cross_entropy_with_logits(
                 inputs,
                 targets,
-                weight=self.weight,
-                pos_weight=self.pos_weight,
+                weight=weight,
+                pos_weight=pos_weight,
                 reduction="none"
             )  # shape: [batch_size, n_concepts]
         else:
@@ -154,7 +176,7 @@ class CoralLoss(nn.Module):
             bce_loss = F.binary_cross_entropy(
                 inputs_clamped,
                 targets,
-                weight=self.weight,
+                weight=weight,
                 reduction="none"
             )
 

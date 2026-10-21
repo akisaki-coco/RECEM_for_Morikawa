@@ -583,8 +583,8 @@ def main():
         )
 
         # QWKでの評価
-        # c_trueの取得
-        c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
+        # c_trueの取得 (daloader_to_memory は only_labels=True のとき (y, c) を返すため第2要素を取得)
+        _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
 
         # c_predの取得
         batch_results = eval_trainer.predict(model, test_dl)
