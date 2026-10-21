@@ -132,11 +132,17 @@ class CoralLoss(nn.Module):
         self.from_logits = from_logits
 
         # GPU移動 (model.to(device)) 時に重みテンソルが自動追従するように register_buffer を使用
+
+        # weightが設定されているとき
         if weight is not None:
+            # weightがtensorじゃなかったら，tensorに変換
             if not isinstance(weight, torch.Tensor):
+                # 浮動小数点数が計算のベース
                 weight = torch.tensor(weight, dtype=torch.float32)
+            # モデルの内部状態だが学習対象ではない変数（バッファ）として登録
             self.register_buffer("weight", weight)
         else:
+            # weight が None の場合は、None を登録
             self.weight = None
 
         if pos_weight is not None:
