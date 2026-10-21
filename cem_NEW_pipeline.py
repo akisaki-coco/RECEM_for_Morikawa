@@ -374,7 +374,7 @@ def main():
     # ★ ここで K-分割交差検証を使うかどうかを選択できます
     # False: CSVの dataset 列 ('train'/'val'/'test') を使った従来の固定分割学習
     # True : 全400枚を対象にした 5-Fold 交差検証 (Stratified K-Fold CV)
-    USE_KFOLD = False
+    USE_KFOLD = True
     N_SPLITS = 5                        # K-Fold 時の分割数 (例: 5)
     VAL_SIZE_FOR_KFOLD = 0.10           # K-Fold 時、Train+Val から Val に割り当てる比率 (10%)
 
