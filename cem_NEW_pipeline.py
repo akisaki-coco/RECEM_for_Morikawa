@@ -57,6 +57,7 @@ from cem.train.evaluate import evaluate_cbm
 import cem.train.utils as utils
 
 from cem.metrics.qwk import compute_concept_qwk
+import cem.utils.data as data_utils
 
 
 # ==============================================================================
@@ -582,7 +583,15 @@ def main():
         )
 
         # QWKでの評価
-        mean_qwk, qwk_list = compute_concept_qwk(test_results["c_true"], test_results["c_pred"])
+        # c_trueの取得
+        c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
+
+        # c_predの取得
+        batch_results = eval_trainer.predict(model, test_dl)
+        c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
+
+        # QWKを計算
+        mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
         print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
 
         # テスト結果に QWK を追加

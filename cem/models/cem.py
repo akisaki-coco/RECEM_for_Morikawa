@@ -235,6 +235,20 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
         #             )
         #         )
         
+        # 活性化関数の設定 (use_coral の前に定義)
+        if embedding_activation is None:
+            act_to_use = []
+        elif embedding_activation == "sigmoid":
+            act_to_use = [torch.nn.Sigmoid()]
+        elif embedding_activation == "leakyrelu":
+            act_to_use = [torch.nn.LeakyReLU()]
+        elif embedding_activation == "relu":
+            act_to_use = [torch.nn.ReLU()]
+        else:
+            raise ValueError(
+                f'Unsupported embedding activation "{embedding_activation}"'
+            )
+
         if self.use_coral:
             # 元概念の数を計算 (例: 40 // (5 - 1) = 10)
             self.num_orig_concepts = n_concepts // (self.num_classes_per_concept - 1)
@@ -257,21 +271,8 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
                     )
                 )
 
-
         else:
             for i in range(n_concepts):
-                if embedding_activation is None:
-                    act_to_use = []
-                elif embedding_activation == "sigmoid":
-                    act_to_use = [torch.nn.Sigmoid()]
-                elif embedding_activation == "leakyrelu":
-                    act_to_use = [torch.nn.LeakyReLU()]
-                elif embedding_activation == "relu":
-                    act_to_use = [torch.nn.ReLU()]
-                else:
-                    raise ValueError(
-                        f'Unsupported embedding activation "{embedding_activation}"'
-                    )
                 self.concept_context_generators.append(
                     torch.nn.Sequential(*([
                         torch.nn.Linear(
