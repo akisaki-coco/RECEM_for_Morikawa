@@ -601,6 +601,9 @@ def main():
         print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
         for k, v in test_results.items():
             print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
+        
+        print(f"\nQWK_mean: {test_results['concept_qwk_mean']:.4f}")
+        print(f"\nQWK_list: {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
 
         # テスト結果を保存
         fixed_txt_path = os.path.join(result_dir, "test_results.txt")
