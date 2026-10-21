@@ -56,6 +56,8 @@ from cem.train.training import train_end_to_end_model
 from cem.train.evaluate import evaluate_cbm
 import cem.train.utils as utils
 
+from cem.metrics.qwk import compute_concept_qwk
+
 
 # ==============================================================================
 # 1. カスタム Dataset クラス（アプローチ B: 順序バイナリ展開）
@@ -352,14 +354,16 @@ def run_kfold_pipeline(
         all_fold_results.append(test_results)
 
     # 4. 全 Fold のサマリー集計 (平均値 ± 標準偏差)
-    print("\n" + "=" * 30 + f" {n_splits}-Fold 交差検証 最終サマリー " + "=" * 30)
-
-    print("【各 Fold の一覧】")
+    summary_lines = []
+    header = "=" * 30 + f" {n_splits}-Fold 交差検証 最終サマリー " + "=" * 30
+    summary_lines.append(header)
+    summary_lines.append("【各 Fold の一覧】")
     for fold, res in enumerate(all_fold_results):
         acc_y = res.get("test_acc_y", 0.0) * 100
         auc_y = res.get("test_auc_y", 0.0) * 100
         acc_c = res.get("test_acc_c", 0.0) * 100
-        print(f"  Fold {fold + 1}: タスク正解率={acc_y:.2f}%, タスクAUC={auc_y:.2f}%, 概念正解率={acc_c:.2f}%")
+        line = f"  Fold {fold + 1}: タスク正解率={acc_y:.2f}%, タスクAUC={auc_y:.2f}%, 概念正解率={acc_c:.2f}%"
+        summary_lines.append(line)
 
     metric_map = {
         "test_acc_y": "タスク分類 正解率 (Accuracy)",
@@ -370,14 +374,41 @@ def run_kfold_pipeline(
         "test_f1_c":  "概念予測 F1-Score (Concept F1)",
     }
 
-    print("\n【全 Fold 平均 ± 標準偏差】")
+    summary_lines.append("\n【全 Fold 平均 ± 標準偏差】")
     for key, label in metric_map.items():
         vals = [res[key] for res in all_fold_results if key in res and isinstance(res[key], (int, float))]
         if vals:
             mean_val = float(np.mean(vals))
             std_val = float(np.std(vals))
-            print(f"  {label:<32}: {mean_val * 100:.2f}% ± {std_val * 100:.2f}%")
-    print("=" * 75)
+            line = f"  {label:<32}: {mean_val * 100:.2f}% ± {std_val * 100:.2f}%"
+            summary_lines.append(line)
+    summary_lines.append("=" * 75)
+
+    # 画面に表示
+    full_summary_text = "\n".join(summary_lines)
+    print("\n" + full_summary_text)
+
+    # --- ファイル保存処理 ---
+    # (1) 整形テキストファイルとして保存 (kfold_summary.txt)
+    txt_path = os.path.join(result_dir, "kfold_summary.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(full_summary_text + "\n")
+    print(f"\n[保存完了] サマリーテキスト: {txt_path}")
+
+    # (2) 表形式 (CSV) として保存 (kfold_results.csv)
+    df_results = pd.DataFrame(all_fold_results)
+    df_results.index = [f"Fold_{i + 1}" for i in range(len(all_fold_results))]
+    # 数値列のみ抽出
+    # 一つずつ列を取り出して，その数字のタイプが数値型なら，変数numeric_colsに追加している
+    numeric_cols = [c for c in df_results.columns if np.issubdtype(df_results[c].dtype, np.number)]
+    df_results = df_results[numeric_cols]
+    # Mean と Std 行を追加
+    df_results.loc["Mean"] = df_results.mean()
+    df_results.loc["Std"] = df_results.std()
+
+    csv_path = os.path.join(result_dir, "kfold_results.csv")
+    df_results.to_csv(csv_path, encoding="utf-8-sig")
+    print(f"[保存完了] 結果詳細CSV    : {csv_path}")
 
     return all_fold_results
 
@@ -427,6 +458,10 @@ def main():
         "architecture": "RECEM" if is_recem else "ConceptEmbeddingModel",
         "emb_size": 8,
         "c_extractor_arch": utils.wrap_pretrained_model(resnet34, pretrain_model=True),
+
+        # CORAL 設定
+        "use_coral": True,
+        "num_classes_per_concept": 5,
 
         # 学習ハイパーパラメータ
         "optimizer": "sgd",
@@ -546,9 +581,28 @@ def main():
             rerun=True,
         )
 
+        # QWKでの評価
+        mean_qwk, qwk_list = compute_concept_qwk(test_results["c_true"], test_results["c_pred"])
+        print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
+
+        # テスト結果に QWK を追加
+        test_results["concept_qwk_mean"] = mean_qwk
+        test_results["concept_qwk_list"] = qwk_list
+
         print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
         for k, v in test_results.items():
             print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
+
+        # テスト結果を保存
+        fixed_txt_path = os.path.join(result_dir, "test_results.txt")
+        with open(fixed_txt_path, "w", encoding="utf-8") as f:
+            for k, v in test_results.items():
+                f.write(f"{k}: {v * 100:.2f}%\n" if isinstance(v, (int, float)) else f"{k}: {v}\n")
+        print(f"\n[保存完了] テスト結果テキスト: {fixed_txt_path}")
+
+        fixed_csv_path = os.path.join(result_dir, "test_results.csv")
+        pd.DataFrame([test_results]).to_csv(fixed_csv_path, index=False, encoding="utf-8-sig")
+        print(f"[保存完了] テスト結果CSV    : {fixed_csv_path}")
 
 
 if __name__ == "__main__":

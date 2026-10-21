@@ -12,6 +12,8 @@ import cem.train.utils as utils
 import torch.nn.functional as F
 from torch.autograd import Function
 
+from cem.models.coral import CoralLoss, CoralLayer
+
 # ==============================================================================
 # RECEM用 補助モジュール (GRL & HSIC)
 # ==============================================================================
@@ -103,6 +105,11 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
         lambda_rec=0.1,
         grl_lambda=1.0,
         ema_momentum=0.9,
+
+        # CORAL用の追加パラメータ
+        use_coral=False,
+        num_classes_per_concept=5,
+        
     ):
         """
         Constructs a Concept Embedding Model (CEM) as defined by
@@ -210,46 +217,65 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
         self.concept_prob_generators = torch.nn.ModuleList()
         self.shared_prob_gen = shared_prob_gen
         self.top_k_accuracy = top_k_accuracy
-        for i in range(n_concepts):
-            if embedding_activation is None:
-                act_to_use = []
-            elif embedding_activation == "sigmoid":
-                act_to_use = [torch.nn.Sigmoid()]
-            elif embedding_activation == "leakyrelu":
-                act_to_use = [torch.nn.LeakyReLU()]
-            elif embedding_activation == "relu":
-                act_to_use = [torch.nn.ReLU()]
-            else:
-                raise ValueError(
-                    f'Unsupported embedding activation "{embedding_activation}"'
+
+        # CORAL 用
+        self.use_coral = use_coral
+        self.num_classes_per_concept = num_classes_per_concept
+
+        if self.use_coral == True:
+            # 元概念の数を計算
+            self.num_orig_concepts = n_concepts // (self.num_classes_per_concept - 1)
+
+            # 各元概念に対して，Coralレイヤーを作成
+            for _ in range(self.num_orig_concepts):
+                self.concept_prob_generators.append(
+                    CoralLayer(
+                        in_features=2 * emb_size,
+                        num_classes=self.num_classes_per_concept
+                    )
                 )
-            self.concept_context_generators.append(
-                torch.nn.Sequential(*([
-                    torch.nn.Linear(
-                        list(
-                            self.pre_concept_model.modules()
-                        )[-1].out_features,
-                        # Two as each concept will have a positive and a
-                        # negative embedding portion which are later mixed
-                        context_gen_out_size,
-                    ),
-                ] + act_to_use))
-            )
-            if self.shared_prob_gen and (
-                len(self.concept_prob_generators) == 0
-            ):
-                # Then we will use one and only one probability generator which
-                # will be shared among all concepts. This will force concept
-                # embedding vectors to be pushed into the same latent space
-                self.concept_prob_generators.append(torch.nn.Linear(
-                    2 * emb_size,
-                    1,
-                ))
-            elif not self.shared_prob_gen:
-                self.concept_prob_generators.append(torch.nn.Linear(
-                    2 * emb_size,
-                    1,
-                ))
+        
+        else:
+            for i in range(n_concepts):
+                if embedding_activation is None:
+                    act_to_use = []
+                elif embedding_activation == "sigmoid":
+                    act_to_use = [torch.nn.Sigmoid()]
+                elif embedding_activation == "leakyrelu":
+                    act_to_use = [torch.nn.LeakyReLU()]
+                elif embedding_activation == "relu":
+                    act_to_use = [torch.nn.ReLU()]
+                else:
+                    raise ValueError(
+                        f'Unsupported embedding activation "{embedding_activation}"'
+                    )
+                self.concept_context_generators.append(
+                    torch.nn.Sequential(*([
+                        torch.nn.Linear(
+                            list(
+                                self.pre_concept_model.modules()
+                            )[-1].out_features,
+                            # Two as each concept will have a positive and a
+                            # negative embedding portion which are later mixed
+                            context_gen_out_size,
+                        ),
+                    ] + act_to_use))
+                )
+                if self.shared_prob_gen and (
+                    len(self.concept_prob_generators) == 0
+                ):
+                    # Then we will use one and only one probability generator which
+                    # will be shared among all concepts. This will force concept
+                    # embedding vectors to be pushed into the same latent space
+                    self.concept_prob_generators.append(torch.nn.Linear(
+                        2 * emb_size,
+                        1,
+                    ))
+                elif not self.shared_prob_gen:
+                    self.concept_prob_generators.append(torch.nn.Linear(
+                        2 * emb_size,
+                        1,
+                    ))
         if getattr(self, '_construct_c2y_model', True):
             if c2y_model is None:
                 # Else we construct it here directly
@@ -266,7 +292,12 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
                 self.c2y_model = c2y_model
         self.sig = torch.nn.Sigmoid()
 
-        self.loss_concept = torch.nn.BCELoss(weight=weight_loss)
+        # CORAL用損失関数
+        if self.use_coral == True:
+            self.loss_concept = CoralLoss(weight=weight_loss)
+        else:
+            self.loss_concept = torch.nn.BCELoss(weight=weight_loss)
+        
         self.loss_task = (
             torch.nn.CrossEntropyLoss(weight=task_class_weights)
             if n_tasks > 1 else torch.nn.BCEWithLogitsLoss(
@@ -522,6 +553,12 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
             contexts = []
             c_sem = []
 
+            # CORAL用ロジット・確率生成
+            if self.use_coral == True:
+                # 10個の元概念コンテキストから，CoralLayerで4次元ずつロジット出力
+                for i in range(self.num_orig_concepts):
+                    
+
             # First predict all the concept probabilities
             for i, context_gen in enumerate(self.concept_context_generators):
                 if self.shared_prob_gen:
@@ -761,6 +798,12 @@ class FixedEmbConceptEmbeddingModel(ConceptEmbeddingModel):
         fixed_embeddings=True,
         initial_concept_embeddings=None,
         fixed_embeddings_always=True,
+
+        # # CORALを使うなら使うフラグ
+        # use_coral=False,
+        # # 各概念のグレード数 (今回は5段階評価)
+        # num_classes_per_concept=5,
+        
     ):
         """
         Same as a CEM but it has a set of learnable global embeddings

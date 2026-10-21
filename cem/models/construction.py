@@ -75,7 +75,10 @@ def construct_model(
             "lambda_rec": config.get("lambda_rec", 0.1),
             "grl_lambda": config.get("grl_lambda", 1.0),
             "ema_momentum": config.get("ema_momentum", 0.9),
-            
+
+            # CORAL用
+            "use_coral": config.get("use_coral", False),
+            "num_classes_per_concept": config.get("num_classes_per_concept", 5),
         }
         if "embeding_activation" in config:
             # Legacy support for typo in argument
