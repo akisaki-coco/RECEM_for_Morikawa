@@ -341,7 +341,7 @@ def run_kfold_pipeline(
             config=config,
             run_name=run_name,
             test_dl=test_dl,
-            dl_name=f"test_fold_{fold + 1}",
+            dl_name="test",
             rerun=True,
         )
 
@@ -352,14 +352,32 @@ def run_kfold_pipeline(
         all_fold_results.append(test_results)
 
     # 4. 全 Fold のサマリー集計 (平均値 ± 標準偏差)
-    print("\n" + "=" * 25 + f" {n_splits}-Fold 交差検証 最終サマリー " + "=" * 25)
-    summary_metrics = ["y_accuracy", "y_auc", "y_f1", "c_accuracy", "c_auc", "c_f1"]
-    for metric in summary_metrics:
-        vals = [res[metric] for res in all_fold_results if metric in res and isinstance(res[metric], (int, float))]
+    print("\n" + "=" * 30 + f" {n_splits}-Fold 交差検証 最終サマリー " + "=" * 30)
+
+    print("【各 Fold の一覧】")
+    for fold, res in enumerate(all_fold_results):
+        acc_y = res.get("test_acc_y", 0.0) * 100
+        auc_y = res.get("test_auc_y", 0.0) * 100
+        acc_c = res.get("test_acc_c", 0.0) * 100
+        print(f"  Fold {fold + 1}: タスク正解率={acc_y:.2f}%, タスクAUC={auc_y:.2f}%, 概念正解率={acc_c:.2f}%")
+
+    metric_map = {
+        "test_acc_y": "タスク分類 正解率 (Accuracy)",
+        "test_auc_y": "タスク分類 AUC",
+        "test_f1_y":  "タスク分類 F1-Score",
+        "test_acc_c": "概念予測 正解率 (Concept Acc)",
+        "test_auc_c": "概念予測 AUC (Concept AUC)",
+        "test_f1_c":  "概念予測 F1-Score (Concept F1)",
+    }
+
+    print("\n【全 Fold 平均 ± 標準偏差】")
+    for key, label in metric_map.items():
+        vals = [res[key] for res in all_fold_results if key in res and isinstance(res[key], (int, float))]
         if vals:
             mean_val = float(np.mean(vals))
             std_val = float(np.std(vals))
-            print(f"{metric:<15}: {mean_val * 100:.2f}% ± {std_val * 100:.2f}%")
+            print(f"  {label:<32}: {mean_val * 100:.2f}% ± {std_val * 100:.2f}%")
+    print("=" * 75)
 
     return all_fold_results
 
