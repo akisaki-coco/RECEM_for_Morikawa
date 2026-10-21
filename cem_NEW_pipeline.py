@@ -383,7 +383,31 @@ def run_kfold_pipeline(
             std_val = float(np.std(vals))
             line = f"  {label:<32}: {mean_val * 100:.2f}% ± {std_val * 100:.2f}%"
             summary_lines.append(line)
+    
+    # QWKでの評価
+    # c_trueの取得 (daloader_to_memory は only_labels=True のとき (y, c) を返すため第2要素を取得)
+    _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
+
+    # c_predの取得
+    batch_results = eval_trainer.predict(model, test_dl)
+    c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
+
+    # QWKを計算
+    mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
+    print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
+
+    # テスト結果に QWK を追加
+    test_results["concept_qwk_mean"] = mean_qwk
+    test_results["concept_qwk_list"] = qwk_list
+
+    print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
+    for k, v in test_results.items():
+        print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
+    
+    print(f"\nQWK_mean: {test_results['concept_qwk_mean']:.4f}")
+    print(f"\nQWK_list: {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
     summary_lines.append("=" * 75)
+
 
     # 画面に表示
     full_summary_text = "\n".join(summary_lines)
@@ -582,28 +606,28 @@ def main():
             rerun=True,
         )
 
-        # QWKでの評価
-        # c_trueの取得 (daloader_to_memory は only_labels=True のとき (y, c) を返すため第2要素を取得)
-        _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
+        # # QWKでの評価
+        # # c_trueの取得 (daloader_to_memory は only_labels=True のとき (y, c) を返すため第2要素を取得)
+        # _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
 
-        # c_predの取得
-        batch_results = eval_trainer.predict(model, test_dl)
-        c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
+        # # c_predの取得
+        # batch_results = eval_trainer.predict(model, test_dl)
+        # c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
 
-        # QWKを計算
-        mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
-        print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
+        # # QWKを計算
+        # mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
+        # print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
 
-        # テスト結果に QWK を追加
-        test_results["concept_qwk_mean"] = mean_qwk
-        test_results["concept_qwk_list"] = qwk_list
+        # # テスト結果に QWK を追加
+        # test_results["concept_qwk_mean"] = mean_qwk
+        # test_results["concept_qwk_list"] = qwk_list
 
-        print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
-        for k, v in test_results.items():
-            print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
+        # print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
+        # for k, v in test_results.items():
+        #     print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
         
-        print(f"\nQWK_mean: {test_results['concept_qwk_mean']:.4f}")
-        print(f"\nQWK_list: {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
+        # print(f"\nQWK_mean: {test_results['concept_qwk_mean']:.4f}")
+        # print(f"\nQWK_list: {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
 
         # テスト結果を保存
         fixed_txt_path = os.path.join(result_dir, "test_results.txt")
