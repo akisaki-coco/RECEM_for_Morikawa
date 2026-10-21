@@ -442,7 +442,7 @@ def main():
     # ★ パッチ分割 (Patch-based 特徴抽出) を使うかどうか
     # True : 画像を高解像度 (448x448) で読み込み、2x2=4枚の 224x224 パッチに分割して特徴抽出・統合
     # False: 従来の 224x224 でリサイズして入力
-    USE_PATCH = True
+    USE_PATCH = False
     IMG_SIZE = 448 if USE_PATCH else 224
 
     # ★ ここで K-分割交差検証を使うかどうかを選択できます
