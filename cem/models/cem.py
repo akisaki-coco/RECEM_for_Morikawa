@@ -222,19 +222,42 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
         self.use_coral = use_coral
         self.num_classes_per_concept = num_classes_per_concept
 
-        if self.use_coral == True:
-            # 元概念の数を計算
+        # if self.use_coral == True:
+        #     # 元概念の数を計算
+        #     self.num_orig_concepts = n_concepts // (self.num_classes_per_concept - 1)
+
+        #     # 各元概念に対して，Coralレイヤーを作成
+        #     for _ in range(self.num_orig_concepts):
+        #         self.concept_prob_generators.append(
+        #             CoralLayer(
+        #                 in_features=2 * emb_size,
+        #                 num_classes=self.num_classes_per_concept
+        #             )
+        #         )
+        
+        if self.use_coral:
+            # 元概念の数を計算 (例: 40 // (5 - 1) = 10)
             self.num_orig_concepts = n_concepts // (self.num_classes_per_concept - 1)
 
-            # 各元概念に対して，Coralレイヤーを作成
             for _ in range(self.num_orig_concepts):
+                # 1. 各元概念専用の特徴量 (16次元) を作るジェネレータ
+                self.concept_context_generators.append(
+                    torch.nn.Sequential(*([
+                        torch.nn.Linear(
+                            list(self.pre_concept_model.modules())[-1].out_features,
+                            context_gen_out_size,
+                        ),
+                    ] + act_to_use))
+                )
+                # 2. 各元概念専用の CoralLayer (重み1つ + バイアス4つ)
                 self.concept_prob_generators.append(
                     CoralLayer(
                         in_features=2 * emb_size,
                         num_classes=self.num_classes_per_concept
                     )
                 )
-        
+
+
         else:
             for i in range(n_concepts):
                 if embedding_activation is None:
@@ -553,24 +576,39 @@ class ConceptEmbeddingModel(ConceptBottleneckModel):
             contexts = []
             c_sem = []
 
-            # CORAL用ロジット・確率生成
-            if self.use_coral == True:
-                # 10個の元概念コンテキストから，CoralLayerで4次元ずつロジット出力
-                for i in range(self.num_orig_concepts):
-                    
+            # # CORAL用ロジット・確率生成
+            # if self.use_coral == True:
+            #     # 10個の元概念コンテキストから，CoralLayerで4次元ずつロジット出力
+            #     for i in range(self.num_orig_concepts):
 
-            # First predict all the concept probabilities
-            for i, context_gen in enumerate(self.concept_context_generators):
-                if self.shared_prob_gen:
-                    prob_gen = self.concept_prob_generators[0]
-                else:
-                    prob_gen = self.concept_prob_generators[i]
-                context = context_gen(pre_c)
-                prob = prob_gen(context)
-                contexts.append(torch.unsqueeze(context, dim=1))
-                c_sem.append(self.sig(prob))
-            c_sem = torch.cat(c_sem, dim=-1)
-            contexts = torch.cat(contexts, dim=1)
+            if self.use_coral:
+                for i in range(self.num_orig_concepts):
+                    # 概念 i のコンテキスト (16次元) を抽出
+                    context = self.concept_context_generators[i](pre_c)
+                    # CoralLayer で 4 つの閾値ロジットを出力
+                    logits = self.concept_prob_generators[i](context)  # [B, 4]
+                    prob = self.sig(logits)                           # [B, 4]
+                    c_sem.append(prob)
+                    # 4段階の閾値それぞれに共通のコンテキストを割り当て
+                    for _ in range(self.num_classes_per_concept - 1):
+                        contexts.append(torch.unsqueeze(context, dim=1))
+                c_sem = torch.cat(c_sem, dim=-1)      # [B, 40] に結合
+                contexts = torch.cat(contexts, dim=1) # [B, 40, 16] に結合
+
+            else:
+                # First predict all the concept probabilities
+                for i, context_gen in enumerate(self.concept_context_generators):
+                    if self.shared_prob_gen:
+                        prob_gen = self.concept_prob_generators[0]
+                    else:
+                        prob_gen = self.concept_prob_generators[i]
+                    context = context_gen(pre_c)
+                    prob = prob_gen(context)
+                    contexts.append(torch.unsqueeze(context, dim=1))
+                    c_sem.append(self.sig(prob))
+                c_sem = torch.cat(c_sem, dim=-1)
+                contexts = torch.cat(contexts, dim=1)
+
             latent = contexts, c_sem
         else:
             contexts, c_sem = latent
