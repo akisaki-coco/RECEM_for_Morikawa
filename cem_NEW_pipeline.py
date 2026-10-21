@@ -357,7 +357,8 @@ def run_kfold_pipeline(
         test_dl = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
         # モデルの学習 (split=fold を渡して各Foldのモデルを分離保存)
-        run_name = f"{MODE}_CUSTOM_fold{fold + 1}_{time.ctime(time.time())}"
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_name = f"{MODE}_CUSTOM_fold{fold + 1}_{ts}"
         model, _ = train_end_to_end_model(
             n_concepts=n_concepts,
             n_tasks=n_tasks,
@@ -478,6 +479,12 @@ def main():
     # ----------------------------------------------------
     MODE = "CEM"  # まずは安定した標準モデル "CEM" で動作確認 ("CEM" または "RECEM")
 
+    # 基本の学習パラメータ
+    BATCH_SIZE = 32
+    NUM_WORKERS = 2                     # Macでの安定動作のため 2 を推奨
+    MAX_EPOCHS = 100                    # エポック数
+    CHECK_VAL_EVERY_N_EPOCH = 5         # 5エポックごとに検証
+
     # ----------------------------------------------------
     # パッチ分割設定 (Patch-based 特徴抽出)
     # ----------------------------------------------------
@@ -492,13 +499,14 @@ def main():
         GRID_SIZE = 5
         PAD_TO_SQUARE = True
         USE_PATCH = True
-        # 25パッチはGPUメモリ消費が大きいため、バッチサイズを安全な値 (4) に自動調整
-        BATCH_SIZE = min(BATCH_SIZE, 4)
+        # 25パッチはGPUメモリ消費が大きいため、バッチサイズを安全な値 (4) に設定
+        BATCH_SIZE = 4
     elif PATCH_MODE == "2x2":
         IMG_SIZE = 448
         GRID_SIZE = 2
         PAD_TO_SQUARE = False
         USE_PATCH = True
+        BATCH_SIZE = min(BATCH_SIZE, 16)
     else:
         IMG_SIZE = 224
         GRID_SIZE = 1
@@ -523,13 +531,8 @@ def main():
     LABEL_COL = "class"
     CONCEPT_COLS = None                 # None の場合は concept.csv の filename 以外の全列を自動取得
 
-    # 学習パラメータ
-    BATCH_SIZE = BATCH_SIZE
-    NUM_WORKERS = 2                     # Macでの安定動作のため 2 を推奨
-    MAX_EPOCHS = 100                    # エポック数
-    CHECK_VAL_EVERY_N_EPOCH = 5         # 5エポックごとに検証
-
-    result_dir = f"./results/custom_{MODE.lower()}_{time.ctime(time.time())}"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    result_dir = f"./results/custom_{MODE.lower()}_{timestamp}"
     os.makedirs(result_dir, exist_ok=True)
 
     # ----------------------------------------------------
@@ -647,13 +650,14 @@ def main():
 
         # 2. 学習パイプラインの実行
         print(f"\n--- {MODE} の学習開始 (固定分割) ---")
+        run_name = f"{MODE}_CUSTOM_{timestamp}"
         model, train_eval_results = train_end_to_end_model(
             n_concepts=n_concepts,
             n_tasks=n_tasks,
             config=config,
             train_dl=train_dl,
             val_dl=val_dl,
-            run_name=f"{MODE}_CUSTOM_{time.ctime(time.time())}",
+            run_name=run_name,
             result_dir=result_dir,
             split=0,
             imbalance=imbalance,
@@ -673,7 +677,7 @@ def main():
             model=model,
             trainer=eval_trainer,
             config=config,
-            run_name=f"{MODE}_CUSTOM_{time.ctime(time.time())}",
+            run_name=run_name,
             test_dl=test_dl,
             dl_name="test",
             rerun=True,
