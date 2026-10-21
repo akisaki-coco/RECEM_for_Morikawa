@@ -58,6 +58,7 @@ import cem.train.utils as utils
 
 from cem.metrics.qwk import compute_concept_qwk
 import cem.utils.data as data_utils
+from cem.models.patch_resnet import PatchResNet
 
 
 # ==============================================================================
@@ -253,7 +254,7 @@ def run_kfold_pipeline(
     val_size=0.10,
     batch_size=32,
     num_workers=2,
-    img_size=900,
+    img_size=224,
     config=None,
     MODE="RECEM",
     result_dir="./results",
@@ -348,9 +349,18 @@ def run_kfold_pipeline(
             rerun=True,
         )
 
+        # QWKでの評価 (各Foldのテストデータ)
+        _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
+        batch_results = eval_trainer.predict(model, test_dl)
+        c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
+        mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
+        test_results["concept_qwk_mean"] = mean_qwk
+        test_results["concept_qwk_list"] = qwk_list
+
         print(f"--- Fold {fold + 1} テスト結果 ---")
         for k, v in test_results.items():
             print(f"  {k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"  {k}: {v}")
+        print(f"  Fold {fold + 1} Concept QWK (Mean): {mean_qwk:.4f}")
 
         all_fold_results.append(test_results)
 
@@ -363,7 +373,8 @@ def run_kfold_pipeline(
         acc_y = res.get("test_acc_y", 0.0) * 100
         auc_y = res.get("test_auc_y", 0.0) * 100
         acc_c = res.get("test_acc_c", 0.0) * 100
-        line = f"  Fold {fold + 1}: タスク正解率={acc_y:.2f}%, タスクAUC={auc_y:.2f}%, 概念正解率={acc_c:.2f}%"
+        qwk_c = res.get("concept_qwk_mean", 0.0)
+        line = f"  Fold {fold + 1}: タスク正解率={acc_y:.2f}%, タスクAUC={auc_y:.2f}%, 概念正解率={acc_c:.2f}%, 概念QWK={qwk_c:.4f}"
         summary_lines.append(line)
 
     metric_map = {
@@ -373,6 +384,7 @@ def run_kfold_pipeline(
         "test_acc_c": "概念予測 正解率 (Concept Acc)",
         "test_auc_c": "概念予測 AUC (Concept AUC)",
         "test_f1_c":  "概念予測 F1-Score (Concept F1)",
+        "concept_qwk_mean": "概念予測 QWK (Concept QWK Mean)",
     }
 
     summary_lines.append("\n【全 Fold 平均 ± 標準偏差】")
@@ -381,31 +393,11 @@ def run_kfold_pipeline(
         if vals:
             mean_val = float(np.mean(vals))
             std_val = float(np.std(vals))
-            line = f"  {label:<32}: {mean_val * 100:.2f}% ± {std_val * 100:.2f}%"
+            if "qwk" in key.lower():
+                line = f"  {label:<32}: {mean_val:.4f} ± {std_val:.4f}"
+            else:
+                line = f"  {label:<32}: {mean_val * 100:.2f}% ± {std_val * 100:.2f}%"
             summary_lines.append(line)
-    
-    # QWKでの評価
-    # c_trueの取得 (daloader_to_memory は only_labels=True のとき (y, c) を返すため第2要素を取得)
-    _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
-
-    # c_predの取得
-    batch_results = eval_trainer.predict(model, test_dl)
-    c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
-
-    # QWKを計算
-    mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
-    print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
-
-    # テスト結果に QWK を追加
-    test_results["concept_qwk_mean"] = mean_qwk
-    test_results["concept_qwk_list"] = qwk_list
-
-    print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
-    for k, v in test_results.items():
-        print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
-    
-    print(f"\nQWK_mean: {test_results['concept_qwk_mean']:.4f}")
-    print(f"\nQWK_list: {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
     summary_lines.append("=" * 75)
 
 
@@ -447,6 +439,12 @@ def main():
     # ----------------------------------------------------
     MODE = "RECEM"  # "RECEM" または "CEM"
 
+    # ★ パッチ分割 (Patch-based 特徴抽出) を使うかどうか
+    # True : 画像を高解像度 (448x448) で読み込み、2x2=4枚の 224x224 パッチに分割して特徴抽出・統合
+    # False: 従来の 224x224 でリサイズして入力
+    USE_PATCH = True
+    IMG_SIZE = 448 if USE_PATCH else 224
+
     # ★ ここで K-分割交差検証を使うかどうかを選択できます
     # False: CSVの dataset 列 ('train'/'val'/'test') を使った従来の固定分割学習
     # True : 全400枚を対象にした 5-Fold 交差検証 (Stratified K-Fold CV)
@@ -479,10 +477,18 @@ def main():
     # ----------------------------------------------------
     is_recem = (MODE == "RECEM")
 
+    # バックボーン CNN (パッチ分割対応 or 通常ResNet)
+    if USE_PATCH:
+        print(f"\n[バックボーン] PatchResNet (パッチ分割: 448x448 -> 224x224 x 4枚) を使用")
+        c_extractor = utils.wrap_pretrained_model(PatchResNet, pretrain_model=True)
+    else:
+        print(f"\n[バックボーン] 通常の ResNet34 (画像サイズ: 224x224) を使用")
+        c_extractor = utils.wrap_pretrained_model(resnet34, pretrain_model=True)
+
     config = {
         "architecture": "RECEM" if is_recem else "ConceptEmbeddingModel",
         "emb_size": 8,
-        "c_extractor_arch": utils.wrap_pretrained_model(resnet34, pretrain_model=True),
+        "c_extractor_arch": c_extractor,
 
         # CORAL 設定
         "use_coral": True,
@@ -546,6 +552,7 @@ def main():
             val_size=VAL_SIZE_FOR_KFOLD,
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
+            img_size=IMG_SIZE,
             config=config,
             MODE=MODE,
             result_dir=result_dir,
@@ -568,6 +575,7 @@ def main():
             concept_cols=CONCEPT_COLS,
             batch_size=BATCH_SIZE,
             num_workers=NUM_WORKERS,
+            img_size=IMG_SIZE,
         )
 
         resume_ckpt = None
@@ -606,28 +614,28 @@ def main():
             rerun=True,
         )
 
-        # # QWKでの評価
-        # # c_trueの取得 (daloader_to_memory は only_labels=True のとき (y, c) を返すため第2要素を取得)
-        # _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
+        # QWKでの評価
+        # c_trueの取得 (daloader_to_memory は only_labels=True のとき (y, c) を返すため第2要素を取得)
+        _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
 
-        # # c_predの取得
-        # batch_results = eval_trainer.predict(model, test_dl)
-        # c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
+        # c_predの取得
+        batch_results = eval_trainer.predict(model, test_dl)
+        c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
 
-        # # QWKを計算
-        # mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
-        # print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
+        # QWKを計算
+        mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
+        print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
 
-        # # テスト結果に QWK を追加
-        # test_results["concept_qwk_mean"] = mean_qwk
-        # test_results["concept_qwk_list"] = qwk_list
+        # テスト結果に QWK を追加
+        test_results["concept_qwk_mean"] = mean_qwk
+        test_results["concept_qwk_list"] = qwk_list
 
-        # print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
-        # for k, v in test_results.items():
-        #     print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
+        print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
+        for k, v in test_results.items():
+            print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
         
-        # print(f"\nQWK_mean: {test_results['concept_qwk_mean']:.4f}")
-        # print(f"\nQWK_list: {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
+        print(f"\nQWK_mean: {test_results['concept_qwk_mean']:.4f}")
+        print(f"\nQWK_list: {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
 
         # テスト結果を保存
         fixed_txt_path = os.path.join(result_dir, "test_results.txt")
