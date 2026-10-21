@@ -329,6 +329,8 @@ def run_kfold_pipeline(
             save_model=True,
             gradient_clip_val=1.0,
             enable_checkpointing=True,
+            devices=1,
+            accelerator="auto",
         )
 
         # テストデータでの評価
@@ -509,6 +511,8 @@ def main():
             gradient_clip_val=1.0,
             ckpt_path=resume_ckpt,
             enable_checkpointing=True,
+            devices=1,
+            accelerator="auto",
         )
 
         # 3. テストデータでの評価
