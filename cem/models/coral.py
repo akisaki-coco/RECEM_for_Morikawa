@@ -131,18 +131,18 @@ class CoralLoss(nn.Module):
         self.reduction = reduction
         self.from_logits = from_logits
 
-        # GPU移動 (model.to(device)) 時に重みテンソルが自動追従するように register_buffer を使用
+        # weight として渡されたものを pos_weight として解釈できるようにする
+        # (imbalance は正例の少なさに対する倍率比率のため、正例に対する重み pos_weight として機能させる)
+        if pos_weight is None and weight is not None:
+            pos_weight = weight
+            weight = None
 
         # weightが設定されているとき
         if weight is not None:
-            # weightがtensorじゃなかったら，tensorに変換
             if not isinstance(weight, torch.Tensor):
-                # 浮動小数点数が計算のベース
                 weight = torch.tensor(weight, dtype=torch.float32)
-            # モデルの内部状態だが学習対象ではない変数（バッファ）として登録
             self.register_buffer("weight", weight)
         else:
-            # weight が None の場合は、None を登録
             self.weight = None
 
         if pos_weight is not None:
@@ -158,7 +158,7 @@ class CoralLoss(nn.Module):
         :param targets: 順序バイナリの正解ラベル [batch_size, n_concepts] (0.0 または 1.0)
         :return: スカラー損失値
         """
-        # デバイスの不一致を自動防止 (万が一 self.weight が別デバイスにあっても追従)
+        # デバイスの不一致を自動防止 (万が一 self.weight / self.pos_weight が別デバイスにあっても追従)
         weight = self.weight
         if weight is not None and weight.device != inputs.device:
             weight = weight.to(inputs.device)
@@ -178,16 +178,18 @@ class CoralLoss(nn.Module):
         else:
             # CEM標準: Sigmoid 後の確率 (0.0〜1.0) を受け取る場合
             eps = 1e-7
-            inputs_clamped = torch.clamp(inputs, eps, 1.0 - eps)
-            bce_loss = F.binary_cross_entropy(
-                inputs_clamped,
-                targets,
-                weight=weight,
-                reduction="none"
-            )
+            p = torch.clamp(inputs, eps, 1.0 - eps)
+            # 正例 (y=1) のみに pos_weight をかけて不均衡補正 (全部ゼロ予測を防ぐ)
+            if pos_weight is not None:
+                bce_loss = - (pos_weight * targets * torch.log(p) + (1.0 - targets) * torch.log(1.0 - p))
+            else:
+                bce_loss = - (targets * torch.log(p) + (1.0 - targets) * torch.log(1.0 - p))
 
-        # サンプルごとに全概念・全閾値の損失を合算
-        sample_loss = bce_loss.sum(dim=-1)  # shape: [batch_size]
+            if weight is not None:
+                bce_loss = bce_loss * weight
+
+        # サンプルごとに全概念・全閾値の損失を平均 (CEM標準の BCELoss とスケールを合わせてタスク損失とのバランスを保つ)
+        sample_loss = bce_loss.mean(dim=-1)  # shape: [batch_size]
 
         if self.reduction == "mean":
             return sample_loss.mean()

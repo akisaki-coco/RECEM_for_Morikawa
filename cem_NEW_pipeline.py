@@ -141,15 +141,16 @@ class OrdinalConceptDataset(Dataset):
 # ==============================================================================
 # 2. 不均衡比率 (imbalance) 計算関数
 # ==============================================================================
-def compute_concept_imbalance(dataset):
+def compute_concept_imbalance(dataset, max_weight=15.0):
     """
     各展開後概念について、正例数と負例数の比率を計算します。
     imbalance_j = (全サンプル数 - 正例数) / max(正例数, 1)
     これは BCEWithLogitsLoss / BCELoss の正例重み (pos_weight) として利用されます。
+    極端な不均衡 (正例が1件など) による勾配爆発を防ぐため、max_weight でクリップします。
     """
     total = len(dataset.c_data)
     ones = dataset.c_data.sum(dim=0).tolist()
-    imbalance = [(total - o) / max(o, 1.0) for o in ones]
+    imbalance = [min((total - o) / max(o, 1.0), max_weight) for o in ones]
     return imbalance
 
 
@@ -437,7 +438,7 @@ def main():
     # ----------------------------------------------------
     # 設定セクション: お手元のファイルパス・パラメータを指定してください
     # ----------------------------------------------------
-    MODE = "RECEM"  # "RECEM" または "CEM"
+    MODE = "CEM"  # まずは安定した標準モデル "CEM" で動作確認 ("CEM" または "RECEM")
 
     # ★ パッチ分割 (Patch-based 特徴抽出) を使うかどうか
     # True : 画像を高解像度 (448x448) で読み込み、2x2=4枚の 224x224 パッチに分割して特徴抽出・統合
@@ -466,8 +467,8 @@ def main():
     # 学習パラメータ
     BATCH_SIZE = 32
     NUM_WORKERS = 2                     # Macでの安定動作のため 2 を推奨
-    MAX_EPOCHS = 100                      # まずは2エポックで動作確認
-    CHECK_VAL_EVERY_N_EPOCH = 5         # 1エポックごとに検証
+    MAX_EPOCHS = 100                    # エポック数
+    CHECK_VAL_EVERY_N_EPOCH = 5         # 5エポックごとに検証
 
     result_dir = f"./results/custom_{MODE.lower()}_{datetime.date.today()}"
     os.makedirs(result_dir, exist_ok=True)
@@ -494,10 +495,10 @@ def main():
         "use_coral": True,
         "num_classes_per_concept": 5,
 
-        # 学習ハイパーパラメータ
-        "optimizer": "sgd",
-        "learning_rate": 0.001,
-        "weight_decay": 4e-05,
+        # 学習ハイパーパラメータ (Adam に変更して少量データでの収束・表現学習を促進)
+        "optimizer": "adam",
+        "learning_rate": 0.0005,
+        "weight_decay": 1e-05,
         "momentum": 0.9,
         "lr_scheduler_factor": 0.1,
         "lr_scheduler_patience": 10,
