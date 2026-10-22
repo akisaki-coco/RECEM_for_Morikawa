@@ -56,7 +56,11 @@ from cem.train.training import train_end_to_end_model
 from cem.train.evaluate import evaluate_cbm
 import cem.train.utils as utils
 
-from cem.metrics.qwk import compute_concept_qwk
+from cem.metrics.qwk import (
+    compute_concept_qwk,
+    optimize_concept_thresholds,
+    compute_concept_qwk_with_rounders,
+)
 import cem.utils.data as data_utils
 from cem.models.patch_resnet import PatchResNet, build_patch_resnet
 
@@ -408,17 +412,31 @@ def run_kfold_pipeline(
         )
 
         # QWKでの評価 (各Foldのテストデータ)
+        # 1. 検証データ (val_dl) で Nelder-Mead 法による最適しきい値を学習 (探索)
+        _, val_c_true = data_utils.daloader_to_memory(val_dl, as_torch=True, only_labels=True)
+        val_batch_results = eval_trainer.predict(model, val_dl)
+        val_c_pred = torch.cat([b[0].detach().cpu() for b in val_batch_results], dim=0)
+        rounders = optimize_concept_thresholds(val_c_true, val_c_pred)
+
+        # 2. テストデータ (test_dl) の予測
         _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
         batch_results = eval_trainer.predict(model, test_dl)
         c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
-        mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
-        test_results["concept_qwk_mean"] = mean_qwk
-        test_results["concept_qwk_list"] = qwk_list
+
+        # 固定しきい値 (0.5) vs Nelder-Mead 最適化しきい値での QWK を両方計算
+        mean_qwk_fixed, qwk_list_fixed = compute_concept_qwk(c_true, c_pred)
+        mean_qwk_opt, qwk_list_opt = compute_concept_qwk_with_rounders(c_true, c_pred, rounders)
+
+        test_results["concept_qwk_fixed"] = mean_qwk_fixed
+        test_results["concept_qwk_opt"] = mean_qwk_opt
+        test_results["concept_qwk_mean"] = mean_qwk_opt  # 代表値として最適化後を保存
+        test_results["concept_qwk_list"] = qwk_list_opt
 
         print(f"--- Fold {fold + 1} テスト結果 ---")
         for k, v in test_results.items():
             print(f"  {k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"  {k}: {v}")
-        print(f"  Fold {fold + 1} Concept QWK (Mean): {mean_qwk:.4f}")
+        print(f"  Fold {fold + 1} Concept QWK (固定閾値 0.5): {mean_qwk_fixed:.4f}")
+        print(f"  Fold {fold + 1} Concept QWK (Nelder-Mead 最適化): {mean_qwk_opt:.4f} (差分: {mean_qwk_opt - mean_qwk_fixed:+.4f})")
 
         all_fold_results.append(test_results)
 
@@ -431,8 +449,9 @@ def run_kfold_pipeline(
         acc_y = res.get("test_acc_y", 0.0) * 100
         auc_y = res.get("test_auc_y", 0.0) * 100
         acc_c = res.get("test_acc_c", 0.0) * 100
-        qwk_c = res.get("concept_qwk_mean", 0.0)
-        line = f"  Fold {fold + 1}: タスク正解率={acc_y:.2f}%, タスクAUC={auc_y:.2f}%, 概念正解率={acc_c:.2f}%, 概念QWK={qwk_c:.4f}"
+        qwk_fixed = res.get("concept_qwk_fixed", 0.0)
+        qwk_opt = res.get("concept_qwk_opt", 0.0)
+        line = f"  Fold {fold + 1}: タスク正解率={acc_y:.2f}%, タスクAUC={auc_y:.2f}%, 概念正解率={acc_c:.2f}%, 概念QWK(固定)={qwk_fixed:.4f}, 概念QWK(最適化)={qwk_opt:.4f}"
         summary_lines.append(line)
 
     metric_map = {
@@ -442,7 +461,8 @@ def run_kfold_pipeline(
         "test_acc_c": "概念予測 正解率 (Concept Acc)",
         "test_auc_c": "概念予測 AUC (Concept AUC)",
         "test_f1_c":  "概念予測 F1-Score (Concept F1)",
-        "concept_qwk_mean": "概念予測 QWK (Concept QWK Mean)",
+        "concept_qwk_fixed": "概念予測 QWK (固定閾値 0.5)",
+        "concept_qwk_opt":   "概念予測 QWK (Nelder-Mead 最適化)",
     }
 
     summary_lines.append("\n【全 Fold 平均 ± 標準偏差】")
@@ -602,7 +622,7 @@ def main():
         "max_epochs": MAX_EPOCHS,
         "concept_warmup_epochs": 0,
         "check_val_every_n_epoch": CHECK_VAL_EVERY_N_EPOCH,
-        "patience" : 8, # 改善が見られなかったエポック数
+        "patience" : 12, # 改善が見られなかったエポック数
         "num_workers": NUM_WORKERS,
         "num_load_workers": NUM_WORKERS,
 
@@ -714,27 +734,35 @@ def main():
         )
 
         # QWKでの評価
-        # c_trueの取得 (daloader_to_memory は only_labels=True のとき (y, c) を返すため第2要素を取得)
-        _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
+        # 1. 検証データ (val_dl) で Nelder-Mead 法による最適しきい値を学習 (探索)
+        _, val_c_true = data_utils.daloader_to_memory(val_dl, as_torch=True, only_labels=True)
+        val_batch_results = eval_trainer.predict(model, val_dl)
+        val_c_pred = torch.cat([b[0].detach().cpu() for b in val_batch_results], dim=0)
+        rounders = optimize_concept_thresholds(val_c_true, val_c_pred)
 
-        # c_predの取得
+        # 2. テストデータ (test_dl) の予測
+        _, c_true = data_utils.daloader_to_memory(test_dl, as_torch=True, only_labels=True)
         batch_results = eval_trainer.predict(model, test_dl)
         c_pred = torch.cat([b[0].detach().cpu() for b in batch_results], dim=0)
 
-        # QWKを計算
-        mean_qwk, qwk_list = compute_concept_qwk(c_true, c_pred)
-        print(f"\n【Concept QWK】平均: {mean_qwk:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list]}")
+        # 固定しきい値 (0.5) vs Nelder-Mead 最適化しきい値での QWK
+        mean_qwk_fixed, qwk_list_fixed = compute_concept_qwk(c_true, c_pred)
+        mean_qwk_opt, qwk_list_opt = compute_concept_qwk_with_rounders(c_true, c_pred, rounders)
 
-        # テスト結果に QWK を追加
-        test_results["concept_qwk_mean"] = mean_qwk
-        test_results["concept_qwk_list"] = qwk_list
+        test_results["concept_qwk_fixed"] = mean_qwk_fixed
+        test_results["concept_qwk_opt"] = mean_qwk_opt
+        test_results["concept_qwk_mean"] = mean_qwk_opt
+        test_results["concept_qwk_list"] = qwk_list_opt
+
+        print(f"\n【Concept QWK (固定閾値 0.5)】平均: {mean_qwk_fixed:.4f} | 各概念: {[f'{q:.4f}' for q in qwk_list_fixed]}")
+        print(f"【Concept QWK (Nelder-Mead 最適化)】平均: {mean_qwk_opt:.4f} (差分: {mean_qwk_opt - mean_qwk_fixed:+.4f}) | 各概念: {[f'{q:.4f}' for q in qwk_list_opt]}")
 
         print("\n" + "=" * 10 + " テスト結果 " + "=" * 10)
         for k, v in test_results.items():
             print(f"{k}: {v * 100:.2f}%" if isinstance(v, (int, float)) else f"{k}: {v}")
         
-        print(f"\nQWK_mean: {test_results['concept_qwk_mean']:.4f}")
-        print(f"\nQWK_list: {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
+        print(f"\nQWK_mean (最適化): {test_results['concept_qwk_opt']:.4f}")
+        print(f"QWK_list (最適化): {[f'{q:.4f}' for q in test_results['concept_qwk_list']]}")
 
         # テスト結果を保存
         fixed_txt_path = os.path.join(result_dir, "test_results.txt")
