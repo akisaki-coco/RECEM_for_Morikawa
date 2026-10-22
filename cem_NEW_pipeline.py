@@ -188,13 +188,29 @@ class PadToSquare(object):
         return ImageOps.expand(img, padding, fill=self.fill)
 
 
-def get_transforms(img_size=224, pad_to_square=False):
+def get_transforms(img_size=224, pad_to_square=False, augment=True):
     """
     ResNetバックボーン用の前処理を返します。
     :param pad_to_square: True の場合は縮小せず黒帯パディング (原寸大パッチ用)
     """
     resize_op = PadToSquare(target_size=img_size, fill=0) if pad_to_square else transforms.Resize((img_size, img_size))
 
+    if augment:
+        # リサイズ後に拡張を適用 (処理コスト削減)。回転・平行移動で生じる余白は黒 (0) で埋める
+        augment_ops = [
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.RandomAffine(
+                degrees=15,                 # ±15度の回転
+                translate=(0.05, 0.05),     # 縦横 最大5%の平行移動
+                scale=(0.9, 1.1),           # 90〜110%の拡大縮小
+                fill=0,
+            ),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1),  # 軽微な明暗・コントラスト変化
+        ]
+    else:
+        augment_ops = [transforms.RandomHorizontalFlip()]
+    
     train_transform = transforms.Compose([
         resize_op,
         transforms.RandomHorizontalFlip(),
@@ -483,7 +499,7 @@ def main():
     BATCH_SIZE = 32
     NUM_WORKERS = 2                     # Macでの安定動作のため 2 を推奨
     MAX_EPOCHS = 100                    # エポック数
-    CHECK_VAL_EVERY_N_EPOCH = 5         # 5エポックごとに検証
+    CHECK_VAL_EVERY_N_EPOCH = 1         # 1エポックごとに検証
 
     # ----------------------------------------------------
     # バックボーン CNN の選択
@@ -573,17 +589,18 @@ def main():
 
         # 学習ハイパーパラメータ (Adam に変更して少量データでの収束・表現学習を促進)
         "optimizer": "adam",
-        "learning_rate": 0.0005,
-        "weight_decay": 1e-05,
+        "learning_rate": 0.0001,
+        "weight_decay": 1e-03,
         "momentum": 0.9,
         "lr_scheduler_factor": 0.1,
         "lr_scheduler_patience": 10,
-        "concept_loss_weight": 1.0,
+        "concept_loss_weight": 2.0,
         "task_loss_weight": 1.0,
         "training_intervention_prob": 0.25,
         "max_epochs": MAX_EPOCHS,
         "concept_warmup_epochs": 0,
         "check_val_every_n_epoch": CHECK_VAL_EVERY_N_EPOCH,
+        "patience" : 8, # 改善が見られなかったエポック数
         "num_workers": NUM_WORKERS,
         "num_load_workers": NUM_WORKERS,
 
