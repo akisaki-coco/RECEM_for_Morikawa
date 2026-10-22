@@ -113,17 +113,18 @@ class PatchResNet(nn.Module):
         return out
 
 
-def build_patch_resnet(grid_size=2, fusion_type="attention", pretrained=True):
+def build_patch_resnet(grid_size=2, fusion_type="attention", pretrained=True, base_arch=resnet34):
     """wrap_pretrained_model 用のファクトリ関数"""
     def _constructor(output_dim=512):
         return PatchResNet(
             output_dim=output_dim,
             pretrained=pretrained,
-            base_arch=resnet34,
+            base_arch=base_arch,
             grid_size=grid_size,
             fusion_type=fusion_type,
         )
     return _constructor
+
 
 
 if __name__ == "__main__":

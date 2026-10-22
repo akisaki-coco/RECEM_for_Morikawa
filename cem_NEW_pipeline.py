@@ -45,7 +45,7 @@ except RuntimeError:
 
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from torchvision.models import resnet34
+from torchvision.models import resnet18, resnet34, resnet50
 from PIL import Image, ImageOps
 import pandas as pd
 import numpy as np
@@ -486,13 +486,19 @@ def main():
     CHECK_VAL_EVERY_N_EPOCH = 5         # 5エポックごとに検証
 
     # ----------------------------------------------------
+    # バックボーン CNN の選択
+    # ----------------------------------------------------
+    # "resnet50" または "resnet34" から選択可能
+    BACKBONE = "resnet50"
+
+    # ----------------------------------------------------
     # パッチ分割設定 (Patch-based 特徴抽出)
     # ----------------------------------------------------
     # PATCH_MODE:
     #   "none" : 通常の全体画像 (224x224 にリサイズして入力)
     #   "2x2"  : 448x448 にリサイズし、4パッチ (各224x224) に分割
     #   "5x5"  : 1120x1120 に原寸大パディングし、25パッチ (各224x224) に分割 (情報劣化ゼロ)
-    PATCH_MODE = "2x2"  # "none", "2x2", "5x5" から選択可能
+    PATCH_MODE = "none"  # "none", "2x2", "5x5" から選択可能
 
     if PATCH_MODE == "5x5":
         IMG_SIZE = 1120
@@ -506,12 +512,14 @@ def main():
         GRID_SIZE = 2
         PAD_TO_SQUARE = False
         USE_PATCH = True
-        BATCH_SIZE = min(BATCH_SIZE, 16)
+        # ResNet50 の場合はメモリ消費を考慮してバッチサイズを調整 (安全のため 8)
+        BATCH_SIZE = min(BATCH_SIZE, 8 if BACKBONE == "resnet50" else 16)
     else:
         IMG_SIZE = 224
         GRID_SIZE = 1
         PAD_TO_SQUARE = False
         USE_PATCH = False
+        BATCH_SIZE = min(BATCH_SIZE, 32)
 
     # ★ ここで K-分割交差検証を使うかどうかを選択できます
     # False: CSVの dataset 列 ('train'/'val'/'test') を使った従来の固定分割学習
@@ -541,15 +549,18 @@ def main():
     is_recem = (MODE == "RECEM")
 
     # バックボーン CNN (パッチ分割対応 or 通常ResNet)
+    backbone_fn = resnet50 if BACKBONE == "resnet50" else resnet34
+    backbone_name = "ResNet50" if BACKBONE == "resnet50" else "ResNet34"
+
     if USE_PATCH:
-        print(f"\n[バックボーン] PatchResNet (パッチ分割: {IMG_SIZE}x{IMG_SIZE} -> {GRID_SIZE}x{GRID_SIZE}={GRID_SIZE*GRID_SIZE}枚, Attention Pooling, PadToSquare={PAD_TO_SQUARE}) を使用")
+        print(f"\n[バックボーン] Patch{backbone_name} (パッチ分割: {IMG_SIZE}x{IMG_SIZE} -> {GRID_SIZE}x{GRID_SIZE}={GRID_SIZE*GRID_SIZE}枚, Attention Pooling, PadToSquare={PAD_TO_SQUARE}) を使用")
         c_extractor = utils.wrap_pretrained_model(
-            build_patch_resnet(grid_size=GRID_SIZE, fusion_type="attention", pretrained=True),
+            build_patch_resnet(grid_size=GRID_SIZE, fusion_type="attention", pretrained=True, base_arch=backbone_fn),
             pretrain_model=True
         )
     else:
-        print(f"\n[バックボーン] 通常の ResNet34 (画像サイズ: 224x224) を使用")
-        c_extractor = utils.wrap_pretrained_model(resnet34, pretrain_model=True)
+        print(f"\n[バックボーン] 通常の {backbone_name} (画像サイズ: 224x224) を使用")
+        c_extractor = utils.wrap_pretrained_model(backbone_fn, pretrain_model=True)
 
     config = {
         "architecture": "RECEM" if is_recem else "ConceptEmbeddingModel",
