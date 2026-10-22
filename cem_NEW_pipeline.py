@@ -191,7 +191,9 @@ class PadToSquare(object):
 def get_transforms(img_size=224, pad_to_square=False, augment=True):
     """
     ResNetバックボーン用の前処理を返します。
+    :param img_size: 出力サイズ
     :param pad_to_square: True の場合は縮小せず黒帯パディング (原寸大パッチ用)
+    :param augment: True の場合はデータ拡張を適用
     """
     resize_op = PadToSquare(target_size=img_size, fill=0) if pad_to_square else transforms.Resize((img_size, img_size))
 
@@ -213,7 +215,7 @@ def get_transforms(img_size=224, pad_to_square=False, augment=True):
     
     train_transform = transforms.Compose([
         resize_op,
-        transforms.RandomHorizontalFlip(),
+        *augment_ops,
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
