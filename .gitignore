@@ -134,3 +134,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# UNI2-h
+UNI2-h/data/
+UNI2-h/features/
+UNI2-h/outputs/

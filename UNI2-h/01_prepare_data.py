@@ -1,141 +1,123 @@
 """
 01_prepare_data.py
 ==================
-フェーズ 1-b: データと正解ラベルの紐付け・クラス不均衡の集計
+フェーズ 1-b: 画像と 10 概念のグレード (1〜5) の紐付け、分布の集計
 
-入力（config.py で指定）:
-    (A) SOURCE_CSV: 画像ファイル名列 (FILENAME_COL) とグレード列 (GRADE_COL) を持つ CSV
-    (B) SOURCE_CSV = None: IMG_DIR/<grade>/*.png のフォルダ構成
+入力 (config.py):
+    CONCEPT_CSV : 列 = filename, 概念1, ..., 概念10（グレード 1〜5）
+    CLASS_CSV   : (任意) 列 = filename, class。層化 K-Fold の分割用ラベルとして使用
 
 出力:
-    data/labels.csv              列: slide_id, image_path, grade (0〜4), source_name
-    data/class_distribution.csv  グレードごとの枚数・割合
+    data/labels.csv               列: slide_id, image_path, strat_label, grade_<概念名> × 概念数, source_name
+    data/concept_distribution.csv 概念 × グレードの枚数表
 
 使い方:
     python 01_prepare_data.py
 """
-import re
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from PIL import Image
 
 import config as C
 
 
-def _resolve_path(p: str) -> Path:
-    p = Path(str(p).strip())
-    return p if p.is_absolute() else Path(C.IMG_DIR) / p
-
-
-def load_from_csv(csv_path: Path) -> pd.DataFrame:
-    df = pd.read_csv(csv_path)
-    for col in (C.FILENAME_COL, C.GRADE_COL):
-        if col not in df.columns:
-            sys.exit(f"[ERROR] {csv_path} に列 '{col}' がありません。列一覧: {list(df.columns)}")
-    df = df[[C.FILENAME_COL, C.GRADE_COL]].rename(columns={C.FILENAME_COL: "source_name", C.GRADE_COL: "grade"})
-    n_before = len(df)
-    df = df.dropna(subset=["grade"])
-    if len(df) < n_before:
-        print(f"[WARN] グレードが欠損している {n_before - len(df)} 行を除外しました")
-    df["image_path"] = df["source_name"].map(lambda s: str(_resolve_path(s)))
-    return df
-
-
-def load_from_folders(img_dir: Path) -> pd.DataFrame:
-    rows = []
-    for sub in sorted(p for p in Path(img_dir).iterdir() if p.is_dir()):
-        m = re.search(r"\d+", sub.name)
-        if m is None:
-            print(f"[WARN] フォルダ名に数字がないためスキップ: {sub.name}")
-            continue
-        for f in sorted(sub.rglob("*")):
-            if f.suffix.lower() in C.IMG_EXTS:
-                rows.append({"source_name": str(f.relative_to(img_dir)), "grade": int(m.group()), "image_path": str(f)})
-    if not rows:
-        sys.exit(f"[ERROR] {img_dir} 以下に画像が見つかりません")
-    return pd.DataFrame(rows)
-
-
-def normalize_grades(df: pd.DataFrame) -> pd.DataFrame:
-    grades = df["grade"].astype(float)
-    if not (grades == grades.round()).all():
-        sys.exit("[ERROR] グレードに整数でない値が含まれています")
-    grades = grades.astype(int)
-    offset = C.GRADE_OFFSET
-    if offset is None:
-        offset = 1 if (grades.min() >= 1 and grades.max() == C.NUM_CLASSES) else 0
-    if offset:
-        print(f"[INFO] グレードを {offset} だけシフトします（例: {grades.min()}〜{grades.max()} → {grades.min()-offset}〜{grades.max()-offset}）")
-    df["grade"] = grades - offset
-    bad = df[(df["grade"] < 0) | (df["grade"] >= C.NUM_CLASSES)]
-    if len(bad):
-        sys.exit(f"[ERROR] 0〜{C.NUM_CLASSES-1} の範囲外のグレードがあります:\n{bad.head()}")
-    return df
-
-
-def validate_images(df: pd.DataFrame) -> pd.DataFrame:
-    missing, size_mismatch = [], []
-    for p in df["image_path"]:
-        path = Path(p)
-        if not path.exists():
-            missing.append(p)
-            continue
-        with Image.open(path) as im:
-            if im.size != tuple(C.EXPECTED_IMG_SIZE):
-                size_mismatch.append((path.name, im.size))
-    if missing:
-        print(f"[ERROR] 画像が見つかりません: {len(missing)} 件（先頭5件）")
-        for p in missing[:5]:
-            print("   ", p)
-        sys.exit(1)
-    if size_mismatch:
-        print(f"[WARN] {C.EXPECTED_IMG_SIZE} 以外のサイズの画像が {len(size_mismatch)} 件あります（前処理で 896 に揃えます）: {size_mismatch[:3]}")
-    return df
-
-
 def main():
-    if C.SOURCE_CSV is not None and Path(C.SOURCE_CSV).exists():
-        print(f"[INFO] CSV から読み込み: {C.SOURCE_CSV}")
-        df = load_from_csv(Path(C.SOURCE_CSV))
-    elif C.SOURCE_CSV is None:
-        print(f"[INFO] フォルダ構成から読み込み: {C.IMG_DIR}")
-        df = load_from_folders(Path(C.IMG_DIR))
-    else:
-        sys.exit(f"[ERROR] SOURCE_CSV が見つかりません: {C.SOURCE_CSV}（config.py を確認してください）")
+    csv = Path(C.CONCEPT_CSV)
+    if not csv.exists():
+        sys.exit(f"[ERROR] CONCEPT_CSV が見つかりません: {csv}（config.py を確認してください）")
+    df = pd.read_csv(csv)
+    if C.FILENAME_COL not in df.columns:
+        sys.exit(f"[ERROR] 列 '{C.FILENAME_COL}' がありません。列一覧: {list(df.columns)}")
 
-    if df["source_name"].duplicated().any():
-        dup = df[df["source_name"].duplicated(keep=False)]
-        sys.exit(f"[ERROR] 同じ画像が重複しています:\n{dup.head()}")
+    concept_cols = C.CONCEPT_COLS or [c for c in df.columns if c != C.FILENAME_COL]
+    missing = [c for c in concept_cols if c not in df.columns]
+    if missing:
+        sys.exit(f"[ERROR] 概念列が見つかりません: {missing}")
+    print(f"[INFO] 概念数: {len(concept_cols)} → {concept_cols}")
 
-    df = normalize_grades(df)
-    df = validate_images(df)
+    df = df[[C.FILENAME_COL] + concept_cols].copy()
+    if df[C.FILENAME_COL].duplicated().any():
+        sys.exit(f"[ERROR] 重複した filename があります:\n{df[df[C.FILENAME_COL].duplicated(keep=False)].head()}")
 
-    # ファイル名でソートして slide_001, slide_002, ... の ID を付与（再実行しても同じ ID になる）
-    df = df.sort_values("source_name").reset_index(drop=True)
+    # 欠損・範囲チェック
+    n0 = len(df)
+    df = df.dropna(subset=concept_cols)
+    if len(df) < n0:
+        print(f"[WARN] 概念グレードに欠損がある {n0 - len(df)} 行を除外しました")
+    grades = df[concept_cols].astype(float)
+    if not (grades.values == np.round(grades.values)).all():
+        sys.exit("[ERROR] 整数でないグレードが含まれています")
+    lo, hi = C.GRADE_MIN, C.GRADE_MIN + C.NUM_GRADES - 1
+    bad = ((grades < lo) | (grades > hi)).any(axis=1)
+    if bad.any():
+        sys.exit(f"[ERROR] {lo}〜{hi} の範囲外のグレードがあります:\n{df[bad].head()}")
+    df[concept_cols] = grades.astype(int)
+
+    # 画像の存在・サイズ確認
+    img_paths, size_warn = [], []
+    for fn in df[C.FILENAME_COL].astype(str):
+        p = Path(fn) if Path(fn).is_absolute() else Path(C.IMG_DIR) / fn
+        if not p.exists():
+            sys.exit(f"[ERROR] 画像が見つかりません: {p}")
+        with Image.open(p) as im:
+            if im.size != tuple(C.EXPECTED_IMG_SIZE):
+                size_warn.append((p.name, im.size))
+        img_paths.append(str(p))
+    if size_warn:
+        print(f"[WARN] {C.EXPECTED_IMG_SIZE} 以外のサイズが {len(size_warn)} 件（前処理で 896 に揃えます）: {size_warn[:3]}")
+    df["image_path"] = img_paths
+
+    # 層化 K-Fold 用ラベル（全概念を同時に層化することはできないため、代表ラベルを 1 つ決める）
+    strat = None
+    if C.CLASS_CSV is not None and Path(C.CLASS_CSV).exists():
+        cls = pd.read_csv(C.CLASS_CSV)
+        if C.FILENAME_COL in cls.columns and C.CLASS_COL in cls.columns:
+            m = dict(zip(cls[C.FILENAME_COL].astype(str), cls[C.CLASS_COL]))
+            s = df[C.FILENAME_COL].astype(str).map(m)
+            if s.notna().all():
+                strat = s.astype(str)
+                print(f"[INFO] 層化ラベル: {C.CLASS_CSV} の '{C.CLASS_COL}' 列")
+            else:
+                print(f"[WARN] CLASS_CSV に無い画像が {int(s.isna().sum())} 枚あるため、層化ラベルは平均グレードで代用します")
+    if strat is None:
+        strat = np.rint(df[concept_cols].mean(axis=1)).astype(int).astype(str)
+        print("[INFO] 層化ラベル: 全概念の平均グレード（四捨五入）")
+    df["strat_label"] = strat.values
+
+    # slide_id 付与（ファイル名順で固定）
+    df = df.sort_values(C.FILENAME_COL).reset_index(drop=True)
     width = max(3, len(str(len(df))))
-    df.insert(0, "slide_id", [f"slide_{i+1:0{width}d}" for i in range(len(df))])
-    df = df[["slide_id", "image_path", "grade", "source_name"]]
+    df.insert(0, "slide_id", [f"slide_{i + 1:0{width}d}" for i in range(len(df))])
+    out = df[["slide_id", "image_path", "strat_label"]].copy()
+    for c in concept_cols:
+        out[f"{C.GRADE_PREFIX}{c}"] = df[c].values
+    out["source_name"] = df[C.FILENAME_COL].values
+
+    # 最小クラスが Fold 数未満だと層化できない
+    vc = out["strat_label"].value_counts()
+    if vc.min() < C.N_FOLDS:
+        print(f"[WARN] 層化ラベル '{vc.idxmin()}' が {vc.min()} 枚で、{C.N_FOLDS}-Fold の層化分割に足りません。")
 
     C.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    df.to_csv(C.LABELS_CSV, index=False)
+    out.to_csv(C.LABELS_CSV, index=False)
 
-    # クラス不均衡の集計
-    counts = df["grade"].value_counts().reindex(range(C.NUM_CLASSES), fill_value=0)
-    dist = pd.DataFrame({"grade": counts.index, "count": counts.values, "ratio": (counts.values / len(df)).round(4)})
-    dist.to_csv(C.CLASS_DIST_CSV, index=False)
+    # 概念 × グレード の分布
+    grade_range = list(range(lo, hi + 1))
+    dist = pd.DataFrame({c: df[c].value_counts().reindex(grade_range, fill_value=0) for c in concept_cols}).T
+    dist.columns = [f"grade{g}" for g in grade_range]
+    dist.index.name = "concept"
+    dist.to_csv(C.CLASS_DIST_CSV)
 
-    print(f"\n総画像数: {len(df)}")
-    print("グレード別枚数:")
-    for _, r in dist.iterrows():
-        bar = "█" * int(round(r["ratio"] * 50))
-        print(f"  Grade {int(r['grade'])}: {int(r['count']):4d} 枚 ({r['ratio']*100:5.1f}%) {bar}")
-    min_count = int(counts.min())
-    if min_count < C.N_FOLDS:
-        print(f"[WARN] 最少クラスが {min_count} 枚で、{C.N_FOLDS}-Fold の層化分割ができません。")
-    elif counts.max() / max(min_count, 1) > 3:
-        print("[INFO] クラス不均衡が大きめです。config.USE_CLASS_WEIGHTS = True も検討してください。")
+    print(f"\n総画像数: {len(out)}")
+    print("概念ごとのグレード分布（枚数）:")
+    print(dist.to_string())
+    sparse = [(c, g) for c in concept_cols for g in grade_range if dist.loc[c, f"grade{g}"] < C.N_FOLDS]
+    if sparse:
+        print(f"\n[INFO] {C.N_FOLDS} 枚未満のグレードがある概念: {sparse[:10]}{' ...' if len(sparse) > 10 else ''}")
+        print("       該当グレードは学習・QWK が不安定になりやすい点に注意してください。")
     print(f"\n保存: {C.LABELS_CSV}\n保存: {C.CLASS_DIST_CSV}")
 
 
