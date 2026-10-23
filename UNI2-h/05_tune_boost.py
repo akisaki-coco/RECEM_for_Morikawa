@@ -69,7 +69,7 @@ def nested_evaluate(scores, y, folds, min_t1=None):
     return pred
 
 
-def run_experiment(min_t1_candidates=[None, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6]):
+def run_experiment(min_t1_candidates=[None, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0]):
     oof = pd.read_csv(C.OOF_CSV)
     concepts = [c[:-len("_true")] for c in oof.columns if c.endswith("_true")]
     folds = oof["fold"].values
