@@ -23,6 +23,8 @@ IMG_DIR = REPO_DIR / "dataset/ccbm_20251109_annotated/data"
 FILENAME_COL = "filename"
 # 使う概念の列名。None なら CONCEPT_CSV の filename 以外の全列を使う
 CONCEPT_COLS = None
+# 除外する概念のリスト（学習・評価から除外）
+EXCLUDE_CONCEPTS = ["Palate ridge", "Erosion"]
 
 # 層化 K-Fold の分割に使うラベル（任意）。
 # クラス CSV (filename, dataset, class) があれば、その class 列で層化する。None なら「全概念の平均グレードの四捨五入」で層化。
@@ -46,7 +48,7 @@ GRADE_PREFIX = "grade_"                         # labels.csv 内の概念列の�
 UNI_MODEL_NAME = "hf-hub:MahmoodLab/UNI2-h"
 PATCH_SIZE = 14
 INPUT_SIZE = 896                                # 14 の倍数 (896 / 14 = 64 → 64x64 = 4096 トークン)
-RESIZE_MODE = "resize"                          # "resize": 900→896 に縮小 / "center_crop": 中央 896 を切り出し
+RESIZE_MODE = "center_crop"                     # "resize": 900→896 に縮小 / "center_crop": 短辺896に縮小して中央896x896をクロップ (アスペクト比保持)
 FEATURE_DIM = 1536
 FEATURE_DIR = ROOT_DIR / "features"             # slide_001.pt などを保存
 USE_AMP = True                                  # CUDA 環境で bf16/fp16 推論を使う

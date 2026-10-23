@@ -1,6 +1,6 @@
-# UNI2-h + MLP (CORAL) による病理 5 段階分類
+# UNI2-h + MLP (CORAL) による病理マルチ概念 5 段階分類
 
-900×900 画像 400 枚 → UNI2-h 特徴量 [1536] → MLP + CORAL → 5-Fold CV → Nelder-Mead 閾値最適化
+画像 400 枚 → UNI2-h 特徴量 [1536] (center_crop 896x896) → 概念ごとの CORAL ヘッド (8 概念) → 5-Fold CV → Nelder-Mead 閾値最適化
 
 ## ファイル構成
 

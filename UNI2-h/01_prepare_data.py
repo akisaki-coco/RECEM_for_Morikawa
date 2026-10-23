@@ -29,14 +29,26 @@ def main():
     if not csv.exists():
         sys.exit(f"[ERROR] CONCEPT_CSV が見つかりません: {csv}（config.py を確認してください）")
     df = pd.read_csv(csv)
+    # 列名前後の余分な空白を除去 (例: 'Vasodilation ' -> 'Vasodilation')
+    df.columns = [c.strip() for c in df.columns]
+
     if C.FILENAME_COL not in df.columns:
         sys.exit(f"[ERROR] 列 '{C.FILENAME_COL}' がありません。列一覧: {list(df.columns)}")
 
     concept_cols = C.CONCEPT_COLS or [c for c in df.columns if c != C.FILENAME_COL]
+    concept_cols = [c.strip() for c in concept_cols]
+
+    # 除外概念のフィルタリング
+    exclude = getattr(C, "EXCLUDE_CONCEPTS", []) or []
+    exclude_clean = [c.strip() for c in exclude]
+    if exclude_clean:
+        concept_cols = [c for c in concept_cols if c not in exclude_clean]
+        print(f"[INFO] 除外した概念 ({len(exclude_clean)} 個): {exclude_clean}")
+
     missing = [c for c in concept_cols if c not in df.columns]
     if missing:
         sys.exit(f"[ERROR] 概念列が見つかりません: {missing}")
-    print(f"[INFO] 概念数: {len(concept_cols)} → {concept_cols}")
+    print(f"[INFO] 対象概念数: {len(concept_cols)} → {concept_cols}")
 
     df = df[[C.FILENAME_COL] + concept_cols].copy()
     if df[C.FILENAME_COL].duplicated().any():
@@ -74,9 +86,10 @@ def main():
     strat = None
     if C.CLASS_CSV is not None and Path(C.CLASS_CSV).exists():
         cls = pd.read_csv(C.CLASS_CSV)
+        cls.columns = [c.strip() for c in cls.columns]
         if C.FILENAME_COL in cls.columns and C.CLASS_COL in cls.columns:
-            m = dict(zip(cls[C.FILENAME_COL].astype(str), cls[C.CLASS_COL]))
-            s = df[C.FILENAME_COL].astype(str).map(m)
+            m = dict(zip(cls[C.FILENAME_COL].astype(str).str.strip(), cls[C.CLASS_COL]))
+            s = df[C.FILENAME_COL].astype(str).str.strip().map(m)
             if s.notna().all():
                 strat = s.astype(str)
                 print(f"[INFO] 層化ラベル: {C.CLASS_CSV} の '{C.CLASS_COL}' 列")
